@@ -1,10 +1,28 @@
 package orchestrator
 
 import (
+	"encoding/json"
+	"fmt"
 	"spec-wizard/config"
 	"spec-wizard/internal/registry"
 	adatools "spec-wizard/tools"
 )
+
+// FlexibleID permite decodificar IDs que venham como int ou string no JSON
+type FlexibleID string
+
+func (f *FlexibleID) UnmarshalJSON(b []byte) error {
+	if len(b) > 0 && b[0] == '"' {
+		return json.Unmarshal(b, (*string)(f))
+	}
+	var i int
+	if err := json.Unmarshal(b, &i); err == nil {
+		*f = FlexibleID(fmt.Sprint(i))
+		return nil
+	}
+	// Fallback para string se não for int nem string com aspas (raro)
+	return json.Unmarshal(b, (*string)(f))
+}
 
 type KnowledgeSource struct {
 	ID           string `json:"id"`
@@ -76,11 +94,12 @@ type ProjectConfig struct {
 	LLM                       LLMConfig         `json:"llm,omitempty"`
 	UserLanguage              string            `json:"userLanguage,omitempty"`
 	KnowledgeBase             []KnowledgeSource `json:"knowledgeBase,omitempty"`
+	ExcludePatterns           []string          `json:"excludePatterns,omitempty"`
 }
 
 // Task representa uma unidade de trabalho dentro de uma sprint
 type Task struct {
-	ID                 int      `json:"id"`
+	ID                 FlexibleID `json:"id"`
 	Title              string   `json:"title"`
 	Priority           string   `json:"priority"` // "HIGH", "MEDIUM", "LOW"
 	Description        string   `json:"description"`
@@ -90,7 +109,7 @@ type Task struct {
 
 // Sprint agrupa tarefas com um objetivo comum
 type Sprint struct {
-	ID    int    `json:"id"`
+	ID    FlexibleID `json:"id"`
 	Goal  string `json:"goal"`
 	Tasks []Task `json:"tasks"`
 }

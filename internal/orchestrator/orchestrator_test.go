@@ -73,7 +73,8 @@ func TestGenerateFileTree(t *testing.T) {
 		ProjectPath: ".", // Use current directory for test
 	}
 
-	tree := o.generateFileTree()
+	// Test without exclusions
+	tree := o.generateFileTree(nil)
 	if tree == "" {
 		t.Error("generateFileTree() returned empty string")
 	}
@@ -81,5 +82,11 @@ func TestGenerateFileTree(t *testing.T) {
 	// Check if it contains some expected elements
 	if !strings.Contains(tree, "types.go") {
 		t.Error("generateFileTree() output missing types.go")
+	}
+
+	// Test with exclusions
+	treeExclude := o.generateFileTree([]string{"types.go"})
+	if strings.Contains(treeExclude, "types.go") {
+		t.Error("generateFileTree() should have excluded types.go")
 	}
 }

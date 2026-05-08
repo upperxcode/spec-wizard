@@ -111,6 +111,13 @@ export const translations = {
     completed: "Concluído",
     ver_diff: "Ver Diff",
     ver_code: "Ver Código",
+    audit_status: "Auditar Status",
+    auditing: "Auditando...",
+    view_task_prompt: "Ver Prompt da Tarefa",
+    audit_completed: "Auditoria concluída!",
+    audit_failed: "Falha na auditoria",
+    audit_confidence: "Confiança",
+    audit_reasoning: "Raciocínio da IA",
     
     // Modals
     task_title: "Título da Tarefa",
@@ -189,7 +196,13 @@ export const translations = {
     status_error: "Erro",
     add_knowledge_success: "Fonte de conhecimento adicionada!",
     upload_success: "Arquivo enviado com sucesso!",
-    processing_started: "O processamento foi iniciado em segundo plano."
+    processing_started: "O processamento foi iniciado em segundo plano.",
+    remove_from_workspace: "Remover do Workspace",
+    delete_project_data: "Excluir Âncora (.spec-wizard)",
+    confirm_remove_project: "Deseja remover este projeto da lista? Os arquivos no disco não serão alterados.",
+    confirm_delete_anchor: "ATENÇÃO: Isso excluirá permanentemente a pasta .spec-wizard do projeto. Deseja continuar?",
+    project_removed: "Projeto removido do workspace!",
+    anchor_deleted: "Âncora .spec-wizard removida do disco!"
   },
   en: {
     // Header & Sidebar
@@ -303,6 +316,13 @@ export const translations = {
     completed: "Completed",
     ver_diff: "View Diff",
     ver_code: "View Code",
+    audit_status: "Audit Status",
+    auditing: "Auditing...",
+    view_task_prompt: "View Task Prompt",
+    audit_completed: "Audit completed!",
+    audit_failed: "Audit failed",
+    audit_confidence: "Confidence",
+    audit_reasoning: "AI Reasoning",
     
     // Modals
     task_title: "Task Title",
@@ -381,7 +401,13 @@ export const translations = {
     status_error: "Error",
     add_knowledge_success: "Knowledge source added!",
     upload_success: "File uploaded successfully!",
-    processing_started: "Processing has started in the background."
+    processing_started: "Processing has started in the background.",
+    remove_from_workspace: "Remove from Workspace",
+    delete_project_data: "Delete Anchor (.spec-wizard)",
+    confirm_remove_project: "Do you want to remove this project from the list? Disk files will not be affected.",
+    confirm_delete_anchor: "WARNING: This will permanently delete the .spec-wizard folder from the project. Continue?",
+    project_removed: "Project removed from workspace!",
+    anchor_deleted: ".spec-wizard anchor removed from disk!"
   },
   es: {
     // Header & Sidebar
@@ -495,6 +521,13 @@ export const translations = {
     completed: "Completado",
     ver_diff: "Ver Diff",
     ver_code: "Ver Código",
+    audit_status: "Auditar Estado",
+    auditing: "Auditando...",
+    view_task_prompt: "Ver Prompt de Tarea",
+    audit_completed: "¡Auditoría completada!",
+    audit_failed: "Auditoría fallida",
+    audit_confidence: "Confianza",
+    audit_reasoning: "Razonamiento de IA",
     
     // Modals
     task_title: "Título de la Tarea",

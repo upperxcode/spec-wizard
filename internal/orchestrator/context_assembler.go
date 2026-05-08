@@ -39,21 +39,21 @@ func (ca *ContextAssembler) AssembleTaskContext(task Task, sprint Sprint, plugin
 	logger.Info("🧩 Montando contexto da tarefa", "task_id", task.ID, "title", task.Title)
 
 	// 1. Carrega SPEC.md
-	spec, err := ca.loadFile("SPEC.md")
-	if err != nil {
-		return nil, fmt.Errorf("falha ao carregar SPEC: %v", err)
+	spec, _ := ca.loadFile("SPEC.md")
+	if spec == "" {
+		spec = "[Nenhuma especificação técnica encontrada em .spec-wizard/SPEC.md]"
 	}
 
 	// 2. Carrega Skills (Golden Rules)
-	skills, err := ca.loadFile("skills.md")
-	if err != nil {
-		return nil, fmt.Errorf("falha ao carregar skills: %v", err)
+	skills, _ := ca.loadFile("skills.md")
+	if skills == "" {
+		skills = "[Nenhuma regra de ouro encontrada em .spec-wizard/skills.md]"
 	}
 
 	// 3. Carrega PRD.md para contexto de negócio
-	prd, err := ca.loadFile("PRD.md")
-	if err != nil {
-		return nil, fmt.Errorf("falha ao carregar PRD: %v", err)
+	prd, _ := ca.loadFile("PRD.md")
+	if prd == "" {
+		prd = "[Nenhum requisito de negócio encontrado em .spec-wizard/PRD.md]"
 	}
 
 	// 4. Busca contexto relevante na Base de Conhecimento
@@ -62,7 +62,7 @@ func (ca *ContextAssembler) AssembleTaskContext(task Task, sprint Sprint, plugin
 
 	// 5. Monta o contexto da tarefa
 	taskContext := &TaskContext{
-		TaskID:             fmt.Sprintf("task-%d", task.ID),
+		TaskID:             fmt.Sprintf("task-%s", task.ID),
 		TaskTitle:          task.Title,
 		TaskDescription:    task.Description,
 		AcceptanceCriteria: task.AcceptanceCriteria,

@@ -89,7 +89,20 @@ func (p *GoclawProvider) Chat(ctx context.Context, model string, messages []Mess
 		Tools:    goclawTools,
 	}
 
-	logger.Debug("🚀 [Goclaw] Enviando requisição", "model", model, "messages_count", len(goclawMessages))
+	// Calcula tamanhos para telemetria
+	totalMsgChars := 0
+	for _, m := range goclawMessages {
+		totalMsgChars += len(m.Content)
+	}
+	toolsSize, _ := json.Marshal(goclawTools)
+
+	logger.Debug("🚀 [Goclaw] Enviando requisição", 
+		"model", model, 
+		"messages_count", len(goclawMessages),
+		"total_msg_chars", totalMsgChars,
+		"tools_payload_size", len(toolsSize))
+
+	logger.Info("⏳ [Goclaw] Aguardando resposta do provedor...", "model", model)
 
 	// 4. Executa o Chat
 	resp, err := p.provider.Chat(ctx, req)
@@ -99,6 +112,10 @@ func (p *GoclawProvider) Chat(ctx context.Context, model string, messages []Mess
 	}
 
 	logger.Debug("✅ [Goclaw] Resposta recebida", "content_length", len(resp.Content))
+	
+	if len(resp.Content) == 0 && len(resp.ToolCalls) == 0 {
+		logger.Info("⚠️ [Goclaw] Resposta da IA veio totalmente vazia (sem conteúdo e sem ferramentas)")
+	}
 
 	// 5. Converte resposta de volta
 	var toolCalls []ToolCall

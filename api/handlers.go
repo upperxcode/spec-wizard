@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -9,6 +10,7 @@ import (
 	"spec-wizard/config"
 	"spec-wizard/internal/adapters"
 	"spec-wizard/internal/llm"
+	"spec-wizard/internal/logger"
 	"spec-wizard/internal/orchestrator"
 	"spec-wizard/internal/patterns"
 	"spec-wizard/internal/registry"
@@ -176,14 +178,14 @@ func (h *APIHandler) InitializeProject(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "Payload inválido", http.StatusBadRequest)
+		sendJSONError(w, "Payload inválido", http.StatusBadRequest)
 		return
 	}
 
 	// 1. Valida o Expert
 	expert, err := registry.FindExpertByLanguage(req.Language, h.Plugins)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusNotFound)
+		sendJSONError(w, err.Error(), http.StatusNotFound)
 		return
 	}
 
@@ -205,7 +207,7 @@ func (h *APIHandler) InitializeProject(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := core.InitializeWithLanguage(config, h.PatternRepo, expert); err != nil {
-		http.Error(w, "Falha na inicialização: "+err.Error(), http.StatusInternalServerError)
+		sendJSONError(w, "Falha na inicialização: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
 
@@ -221,13 +223,13 @@ func (h *APIHandler) SaveRoadmap(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "Payload inválido: "+err.Error(), http.StatusBadRequest)
+		sendJSONError(w, "Payload inválido: "+err.Error(), http.StatusBadRequest)
 		return
 	}
 
 	core := orchestrator.NewOrchestrator(req.Path, h.Plugins, h.Engine)
 	if err := core.SaveRoadmap(req.Roadmap); err != nil {
-		http.Error(w, "Falha ao salvar roadmap: "+err.Error(), http.StatusInternalServerError)
+		sendJSONError(w, "Falha ao salvar roadmap: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
 
@@ -250,7 +252,7 @@ func (h *APIHandler) GenerateRoadmap(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "Payload inválido", http.StatusBadRequest)
+		sendJSONError(w, "Payload inválido", http.StatusBadRequest)
 		return
 	}
 
@@ -278,7 +280,7 @@ func (h *APIHandler) GenerateRoadmap(w http.ResponseWriter, r *http.Request) {
 	// 3. Chama a lógica de geração do Roadmap (que usa a Prompt Factory e LM Studio)
 	roadmap, err := core.GenerateInitialRoadmap(config)
 	if err != nil {
-		http.Error(w, "Falha ao gerar roadmap: "+err.Error(), http.StatusInternalServerError)
+		sendJSONError(w, "Falha ao gerar roadmap: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
 
@@ -290,15 +292,15 @@ func (h *APIHandler) GenerateRoadmap(w http.ResponseWriter, r *http.Request) {
 // POST /api/execute-task - Executa uma tarefa específica via Clean Window
 func (h *APIHandler) ExecuteTask(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		ProjectPath string              `json:"project_path"`
-		SprintID    int                 `json:"sprint_id"`
-		TaskID      int                 `json:"task_id"`
-		Task        orchestrator.Task   `json:"task"`
-		Sprint      orchestrator.Sprint `json:"sprint"`
+		ProjectPath string                  `json:"project_path"`
+		SprintID    orchestrator.FlexibleID `json:"sprint_id"`
+		TaskID      orchestrator.FlexibleID `json:"task_id"`
+		Task        orchestrator.Task       `json:"task"`
+		Sprint      orchestrator.Sprint     `json:"sprint"`
 	}
 
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "Payload inválido: "+err.Error(), http.StatusBadRequest)
+		sendJSONError(w, "Payload inválido: "+err.Error(), http.StatusBadRequest)
 		return
 	}
 
@@ -306,7 +308,7 @@ func (h *APIHandler) ExecuteTask(w http.ResponseWriter, r *http.Request) {
 	core := orchestrator.NewOrchestrator(req.ProjectPath, h.Plugins, h.Engine)
 	state, err := core.CheckInitialState()
 	if err != nil || state.Language == "" {
-		http.Error(w, "Projeto não inicializado ou linguagem não encontrada", http.StatusBadRequest)
+		sendJSONError(w, "Projeto não inicializado ou linguagem não encontrada", http.StatusBadRequest)
 		return
 	}
 
@@ -316,14 +318,14 @@ func (h *APIHandler) ExecuteTask(w http.ResponseWriter, r *http.Request) {
 	// 3. Monta a janela limpa de contexto para a tarefa
 	taskContext, err := assembler.AssembleTaskContext(req.Task, req.Sprint, h.Plugins)
 	if err != nil {
-		http.Error(w, "Falha ao montar contexto: "+err.Error(), http.StatusInternalServerError)
+		sendJSONError(w, "Falha ao montar contexto: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
 
 	// 4. Executa a tarefa via Feedback Loop (IA + Sensores + Auto-correção)
 	llmClient, err := h.GetLLMClient(orchestrator.ProjectConfig{})
 	if err != nil {
-		http.Error(w, "Erro ao obter cliente LLM: "+err.Error(), http.StatusInternalServerError)
+		sendJSONError(w, "Erro ao obter cliente LLM: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
 
@@ -334,24 +336,37 @@ func (h *APIHandler) ExecuteTask(w http.ResponseWriter, r *http.Request) {
 
 	loop := orchestrator.NewFeedbackLoop(req.ProjectPath, state.Language, userLang, llmClient)
 
-	fmt.Printf("🔄 Iniciando execução da tarefa %d via Feedback Loop...\n", req.TaskID)
-	attempt, err := loop.ExecuteTaskWithFeedback(taskContext, req.Task, req.Sprint)
+	fmt.Printf("🔄 Iniciando execução da tarefa %v via Feedback Loop...\n", req.TaskID)
+	
+	// Timeout de 180s (3 minutos) para a execução completa (IA + Ferramentas + Verificação)
+	ctx, cancel := context.WithTimeout(r.Context(), 180*time.Second)
+	defer cancel()
+
+	attempt, err := loop.ExecuteTaskWithFeedback(ctx, taskContext, req.Task, req.Sprint)
 
 	// 5. Mesmo que falhe após as tentativas, salvamos o log
 	if attempt != nil {
-		loop.SaveExecutionLog(req.ProjectPath, fmt.Sprintf("sprint-%d-task-%d", req.SprintID, req.TaskID), attempt)
+		loop.SaveExecutionLog(req.ProjectPath, fmt.Sprintf("sprint-%v-task-%v", req.SprintID, req.TaskID), attempt)
 	}
 
 	if err != nil {
-		http.Error(w, "Falha na execução (após auto-correção): "+err.Error(), http.StatusInternalServerError)
+		if ctx.Err() == context.DeadlineExceeded {
+			logger.Error("❌ Timeout na execução da tarefa (180s excedidos)", err)
+			sendJSONError(w, "A execução da tarefa demorou demais (timeout de 3min). Verifique se o modelo selecionado está disponível ou tente um modelo mais rápido.", http.StatusGatewayTimeout)
+			return
+		}
+		sendJSONError(w, "Falha na execução (após auto-correção): "+err.Error(), http.StatusInternalServerError)
 		return
 	}
+
+	// 6. Se sucesso total, marcamos como concluída no roadmap
+	core.UpdateTaskStatus(req.SprintID, req.TaskID, "completed")
 
 	// 6. Retorna a resposta da IA (validada)
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{
 		"status":            "success",
-		"task_id":           fmt.Sprintf("sprint-%d-task-%d", req.SprintID, req.TaskID),
+		"task_id":           fmt.Sprintf("sprint-%v-task-%v", req.SprintID, req.TaskID),
 		"ai_response":       attempt.AIResponse,
 		"validation_passed": attempt.ValidationPassed,
 		"attempts":          attempt.AttemptNumber,
@@ -368,7 +383,7 @@ func (h *APIHandler) GenerateTaskPrompt(w http.ResponseWriter, r *http.Request) 
 	}
 
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "Payload inválido", http.StatusBadRequest)
+		sendJSONError(w, "Payload inválido", http.StatusBadRequest)
 		return
 	}
 
@@ -378,7 +393,7 @@ func (h *APIHandler) GenerateTaskPrompt(w http.ResponseWriter, r *http.Request) 
 	// 2. Monta o contexto da tarefa
 	taskContext, err := assembler.AssembleTaskContext(req.Task, req.Sprint, h.Plugins)
 	if err != nil {
-		http.Error(w, "Falha ao montar contexto: "+err.Error(), http.StatusInternalServerError)
+		sendJSONError(w, "Falha ao montar contexto: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
 
@@ -396,14 +411,14 @@ func (h *APIHandler) GenerateTaskPrompt(w http.ResponseWriter, r *http.Request) 
 func (h *APIHandler) GetProjectStatus(w http.ResponseWriter, r *http.Request) {
 	path := r.URL.Query().Get("path")
 	if path == "" {
-		http.Error(w, "Caminho é obrigatório", http.StatusBadRequest)
+		sendJSONError(w, "Caminho é obrigatório", http.StatusBadRequest)
 		return
 	}
 
 	core := orchestrator.NewOrchestrator(path, h.Plugins, h.Engine)
 	state, err := core.CheckInitialState()
 	if err != nil {
-		http.Error(w, "Erro ao verificar estado: "+err.Error(), http.StatusInternalServerError)
+		sendJSONError(w, "Erro ao verificar estado: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
 
@@ -419,20 +434,20 @@ func (h *APIHandler) InterpretProject(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "Payload inválido", http.StatusBadRequest)
+		sendJSONError(w, "Payload inválido", http.StatusBadRequest)
 		return
 	}
 
 	// 1. Acha o expert
 	expert, err := registry.FindExpertByLanguage(req.Language, h.Plugins)
 	if err != nil {
-		http.Error(w, "Especialista não encontrado para "+req.Language, http.StatusBadRequest)
+		sendJSONError(w, "Especialista não encontrado para "+req.Language, http.StatusBadRequest)
 		return
 	}
 
 	// 2. Garante que o expert esteja rodando
 	if err := registry.GlobalManager.EnsureExpertRunning(expert); err != nil {
-		http.Error(w, "Falha ao iniciar expert: "+err.Error(), http.StatusInternalServerError)
+		sendJSONError(w, "Falha ao iniciar expert: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
 
@@ -445,7 +460,7 @@ func (h *APIHandler) InterpretProject(w http.ResponseWriter, r *http.Request) {
 	core := orchestrator.NewOrchestrator(req.Path, h.Plugins, h.Engine)
 	suggestion, err := core.InterpretExistingProject(req.Language, expert, userLang)
 	if err != nil {
-		http.Error(w, "Falha na interpretação: "+err.Error(), http.StatusInternalServerError)
+		sendJSONError(w, "Falha na interpretação: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
 
@@ -490,7 +505,7 @@ func (h *APIHandler) CheckLLMStatus(w http.ResponseWriter, r *http.Request) {
 // GET /api/llm/config - Retorna a configuração global de provedores
 func (h *APIHandler) GetLLMConfig(w http.ResponseWriter, r *http.Request) {
 	if h.Engine == nil {
-		http.Error(w, "Config Engine não inicializada", http.StatusInternalServerError)
+		sendJSONError(w, "Config Engine não inicializada", http.StatusInternalServerError)
 		return
 	}
 
@@ -501,7 +516,7 @@ func (h *APIHandler) GetLLMConfig(w http.ResponseWriter, r *http.Request) {
 // POST /api/llm/active - Define o modelo ativo
 func (h *APIHandler) SetActiveModel(w http.ResponseWriter, r *http.Request) {
 	if h.Engine == nil {
-		http.Error(w, "Config Engine não inicializada", http.StatusInternalServerError)
+		sendJSONError(w, "Config Engine não inicializada", http.StatusInternalServerError)
 		return
 	}
 
@@ -511,12 +526,12 @@ func (h *APIHandler) SetActiveModel(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "Payload inválido", http.StatusBadRequest)
+		sendJSONError(w, "Payload inválido", http.StatusBadRequest)
 		return
 	}
 
 	if err := h.Engine.SetActiveModel(req.Provider, req.Model); err != nil {
-		http.Error(w, "Erro ao definir modelo ativo: "+err.Error(), http.StatusInternalServerError)
+		sendJSONError(w, "Erro ao definir modelo ativo: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
 
@@ -527,7 +542,7 @@ func (h *APIHandler) SetActiveModel(w http.ResponseWriter, r *http.Request) {
 // POST /api/llm/provider/status - Ativa ou desativa um provedor
 func (h *APIHandler) SetProviderStatus(w http.ResponseWriter, r *http.Request) {
 	if h.Engine == nil {
-		http.Error(w, "Config Engine não inicializada", http.StatusInternalServerError)
+		sendJSONError(w, "Config Engine não inicializada", http.StatusInternalServerError)
 		return
 	}
 
@@ -537,12 +552,12 @@ func (h *APIHandler) SetProviderStatus(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "Payload inválido", http.StatusBadRequest)
+		sendJSONError(w, "Payload inválido", http.StatusBadRequest)
 		return
 	}
 
 	if err := h.Engine.SetProviderStatus(req.Name, req.Enabled); err != nil {
-		http.Error(w, "Erro ao atualizar status do provedor: "+err.Error(), http.StatusInternalServerError)
+		sendJSONError(w, "Erro ao atualizar status do provedor: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
 
@@ -553,12 +568,12 @@ func (h *APIHandler) SetProviderStatus(w http.ResponseWriter, r *http.Request) {
 // POST /api/llm/reload - Força o recarregamento do config do disco
 func (h *APIHandler) ReloadLLMConfig(w http.ResponseWriter, r *http.Request) {
 	if h.Engine == nil {
-		http.Error(w, "Config Engine não inicializada", http.StatusInternalServerError)
+		sendJSONError(w, "Config Engine não inicializada", http.StatusInternalServerError)
 		return
 	}
 
 	if err := h.Engine.ReloadConfig(); err != nil {
-		http.Error(w, "Erro ao recarregar configuração: "+err.Error(), http.StatusInternalServerError)
+		sendJSONError(w, "Erro ao recarregar configuração: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
 
@@ -574,7 +589,7 @@ func (h *APIHandler) InferPurpose(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "Payload inválido", http.StatusBadRequest)
+		sendJSONError(w, "Payload inválido", http.StatusBadRequest)
 		return
 	}
 
@@ -618,13 +633,13 @@ Start your analysis:`, req.Path, string(metadataJSON), langInstruction)
 
 	llmClient, err := h.GetLLMClient(orchestrator.ProjectConfig{UserLanguage: userLang})
 	if err != nil {
-		http.Error(w, "Erro ao obter cliente LLM: "+err.Error(), http.StatusInternalServerError)
+		sendJSONError(w, "Erro ao obter cliente LLM: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
 	response, err := llmClient.Ask(prompt)
 
 	if err != nil {
-		http.Error(w, "Falha ao consultar IA: "+err.Error(), http.StatusInternalServerError)
+		sendJSONError(w, "Falha ao consultar IA: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
 
@@ -641,7 +656,7 @@ func (h *APIHandler) SaveProjectSpec(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "Payload inválido", http.StatusBadRequest)
+		sendJSONError(w, "Payload inválido", http.StatusBadRequest)
 		return
 	}
 
@@ -669,7 +684,7 @@ func (h *APIHandler) SaveProjectSpec(w http.ResponseWriter, r *http.Request) {
 	err = core.SaveAgentsDocs(req.Config, h.PatternRepo)
 
 	if err != nil {
-		http.Error(w, "Erro ao salvar documentação: "+err.Error(), http.StatusInternalServerError)
+		sendJSONError(w, "Erro ao salvar documentação: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
 
@@ -699,17 +714,17 @@ func (h *APIHandler) ListProjects(w http.ResponseWriter, r *http.Request) {
 func (h *APIHandler) AddProject(w http.ResponseWriter, r *http.Request) {
 	var entry workspace.ProjectEntry
 	if err := json.NewDecoder(r.Body).Decode(&entry); err != nil {
-		http.Error(w, "Payload inválido", http.StatusBadRequest)
+		sendJSONError(w, "Payload inválido", http.StatusBadRequest)
 		return
 	}
 
 	if entry.Name == "" || entry.Path == "" {
-		http.Error(w, "Nome e Path são obrigatórios", http.StatusBadRequest)
+		sendJSONError(w, "Nome e Path são obrigatórios", http.StatusBadRequest)
 		return
 	}
 
 	if err := h.Workspace.AddProject(entry.Name, entry.Path); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		sendJSONError(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 
@@ -721,12 +736,12 @@ func (h *APIHandler) AddProject(w http.ResponseWriter, r *http.Request) {
 func (h *APIHandler) RemoveProject(w http.ResponseWriter, r *http.Request) {
 	path := r.URL.Query().Get("path")
 	if path == "" {
-		http.Error(w, "Path é obrigatório", http.StatusBadRequest)
+		sendJSONError(w, "Path é obrigatório", http.StatusBadRequest)
 		return
 	}
 
 	if err := h.Workspace.RemoveProject(path); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		sendJSONError(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 
@@ -773,7 +788,7 @@ func (h *APIHandler) GetHarnessPrompt(w http.ResponseWriter, r *http.Request) {
 	path := r.URL.Query().Get("path")
 	question := r.URL.Query().Get("question")
 	if path == "" {
-		http.Error(w, "Caminho é obrigatório", http.StatusBadRequest)
+		sendJSONError(w, "Caminho é obrigatório", http.StatusBadRequest)
 		return
 	}
 
@@ -781,7 +796,7 @@ func (h *APIHandler) GetHarnessPrompt(w http.ResponseWriter, r *http.Request) {
 	// Configura o idioma do usuário no orquestrador se necessário (ex: via ProjectConfig)
 	prompt, err := core.GenerateHarnessPrompt(question)
 	if err != nil {
-		http.Error(w, "Erro ao gerar prompt: "+err.Error(), http.StatusInternalServerError)
+		sendJSONError(w, "Erro ao gerar prompt: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
 
@@ -797,7 +812,7 @@ func (h *APIHandler) GenerateRoadmapFromCode(w http.ResponseWriter, r *http.Requ
 	}
 
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "Payload inválido", http.StatusBadRequest)
+		sendJSONError(w, "Payload inválido", http.StatusBadRequest)
 		return
 	}
 
@@ -807,7 +822,7 @@ func (h *APIHandler) GenerateRoadmapFromCode(w http.ResponseWriter, r *http.Requ
 	roadmap, err := core.UpdateRoadmapFromCode(req.Config)
 	if err != nil {
 		fmt.Printf("❌ [API] Erro ao gerar roadmap: %v\n", err)
-		http.Error(w, "Falha ao gerar roadmap via código: "+err.Error(), http.StatusInternalServerError)
+		sendJSONError(w, "Falha ao gerar roadmap via código: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
 
@@ -826,7 +841,7 @@ func (h *APIHandler) GetRoadmapPrompt(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "Payload inválido", http.StatusBadRequest)
+		sendJSONError(w, "Payload inválido", http.StatusBadRequest)
 		return
 	}
 
@@ -848,7 +863,7 @@ func (h *APIHandler) GetKnowledge(w http.ResponseWriter, r *http.Request) {
 
 	path := r.URL.Query().Get("path")
 	if path == "" {
-		http.Error(w, "Caminho é obrigatório", http.StatusBadRequest)
+		sendJSONError(w, "Caminho é obrigatório", http.StatusBadRequest)
 		return
 	}
 
@@ -874,7 +889,7 @@ func (h *APIHandler) UploadKnowledge(w http.ResponseWriter, r *http.Request) {
 	projectPath := r.FormValue("path")
 	file, handler, err := r.FormFile("file")
 	if err != nil {
-		http.Error(w, "Erro ao recuperar arquivo: "+err.Error(), http.StatusBadRequest)
+		sendJSONError(w, "Erro ao recuperar arquivo: "+err.Error(), http.StatusBadRequest)
 		return
 	}
 	defer file.Close()
@@ -882,7 +897,7 @@ func (h *APIHandler) UploadKnowledge(w http.ResponseWriter, r *http.Request) {
 	km := orchestrator.NewKnowledgeManager(projectPath)
 	source, err := km.IngestFile(handler.Filename, file)
 	if err != nil {
-		http.Error(w, "Erro ao processar arquivo: "+err.Error(), http.StatusInternalServerError)
+		sendJSONError(w, "Erro ao processar arquivo: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
 
@@ -900,14 +915,14 @@ func (h *APIHandler) AddKnowledgeLink(w http.ResponseWriter, r *http.Request) {
 		URL  string `json:"url"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "Payload inválido", http.StatusBadRequest)
+		sendJSONError(w, "Payload inválido", http.StatusBadRequest)
 		return
 	}
 
 	km := orchestrator.NewKnowledgeManager(req.Path)
 	source, err := km.IngestLink(req.URL)
 	if err != nil {
-		http.Error(w, "Erro ao processar link: "+err.Error(), http.StatusInternalServerError)
+		sendJSONError(w, "Erro ao processar link: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
 
@@ -935,14 +950,14 @@ func (h *APIHandler) DeleteKnowledge(w http.ResponseWriter, r *http.Request) {
 	id := r.URL.Query().Get("id")
 
 	if path == "" || id == "" {
-		http.Error(w, "Path e ID são obrigatórios", http.StatusBadRequest)
+		sendJSONError(w, "Path e ID são obrigatórios", http.StatusBadRequest)
 		return
 	}
 
 	configPath := filepath.Join(path, ".spec-wizard", "config.json")
 	data, err := os.ReadFile(configPath)
 	if err != nil {
-		http.Error(w, "Config não encontrado", http.StatusNotFound)
+		sendJSONError(w, "Config não encontrado", http.StatusNotFound)
 		return
 	}
 
@@ -976,13 +991,13 @@ func (h *APIHandler) DeleteKnowledge(w http.ResponseWriter, r *http.Request) {
 func (h *APIHandler) DeleteProject(w http.ResponseWriter, r *http.Request) {
 	path := r.URL.Query().Get("path")
 	if path == "" {
-		http.Error(w, "Caminho do projeto é obrigatório", http.StatusBadRequest)
+		sendJSONError(w, "Caminho do projeto é obrigatório", http.StatusBadRequest)
 		return
 	}
 
 	core := orchestrator.NewOrchestrator(path, h.Plugins, h.Engine)
 	if err := core.DeleteProjectAnchor(); err != nil {
-		http.Error(w, "Falha ao remover âncora: "+err.Error(), http.StatusInternalServerError)
+		sendJSONError(w, "Falha ao remover âncora: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
 
@@ -998,21 +1013,140 @@ func (h *APIHandler) RenameProject(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "Payload inválido", http.StatusBadRequest)
+		sendJSONError(w, "Payload inválido", http.StatusBadRequest)
 		return
 	}
 
 	if req.Path == "" || req.NewName == "" {
-		http.Error(w, "Caminho e Novo Nome são obrigatórios", http.StatusBadRequest)
+		sendJSONError(w, "Caminho e Novo Nome são obrigatórios", http.StatusBadRequest)
 		return
 	}
 
 	core := orchestrator.NewOrchestrator(req.Path, h.Plugins, h.Engine)
 	if err := core.RenameProject(req.NewName); err != nil {
-		http.Error(w, "Falha ao renomear: "+err.Error(), http.StatusInternalServerError)
+		sendJSONError(w, "Falha ao renomear: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
 
 	w.WriteHeader(http.StatusOK)
 	w.Write([]byte("Projeto renomeado com sucesso"))
+}
+
+// POST /api/project/audit-task
+func (h *APIHandler) AuditTaskStatus(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		ProjectPath string                  `json:"project_path"`
+		SprintID    orchestrator.FlexibleID `json:"sprint_id"`
+		TaskID      orchestrator.FlexibleID `json:"task_id"`
+	}
+
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		sendJSONError(w, "Payload inválido", http.StatusBadRequest)
+		return
+	}
+
+	// 1. Instancia o Orquestrador
+	absPath, _ := filepath.Abs(req.ProjectPath)
+	core := orchestrator.NewOrchestrator(absPath, h.Plugins, h.Engine)
+
+	// 2. Busca o estado do projeto para pegar a configuração de LLM
+	state, err := core.CheckInitialState()
+	if err != nil {
+		sendJSONError(w, "Projeto não encontrado", http.StatusNotFound)
+		return
+	}
+
+	// 3. Carrega o ProjectConfig do arquivo para garantir contexto completo
+	configPath := filepath.Join(req.ProjectPath, ".spec-wizard", "config.json")
+	data, _ := os.ReadFile(configPath)
+	var config orchestrator.ProjectConfig
+	json.Unmarshal(data, &config)
+
+	// Injeta a linguagem se não estiver no config
+	if config.Language == "" {
+		config.Language = state.Language
+	}
+
+	// 4. Executa a auditoria com timeout para evitar travamentos infinitos
+	logger.Info("🔍 Iniciando auditoria via Orquestrador", "sprint", req.SprintID, "task", req.TaskID)
+
+	// Timeout de 180s (3 minutos) para a auditoria
+	ctx, cancel := context.WithTimeout(r.Context(), 180*time.Second)
+	defer cancel()
+
+	result, err := core.AuditTask(ctx, req.SprintID, req.TaskID, config)
+	if err != nil {
+		if ctx.Err() == context.DeadlineExceeded {
+			logger.Error("❌ Timeout na auditoria (180s excedidos)", err)
+			sendJSONError(w, "A auditoria demorou demais para responder (timeout de 3min). Verifique se o modelo selecionado está disponível ou tente um modelo mais rápido.", http.StatusGatewayTimeout)
+			return
+		}
+		logger.Error("❌ Erro na auditoria", err)
+
+		msg := fmt.Sprintf("Falha na auditoria: %v", err)
+		// Se o erro indicar resposta vazia ou problema de parsing, sugerimos a troca de modelo
+		if strings.Contains(err.Error(), "vazia") || strings.Contains(err.Error(), "JSON") {
+			_, modelCfg, _ := h.Engine.GetActiveModel()
+			msg = fmt.Sprintf("%s. Dica: O modelo atual (%s) pode não ter capacidade suficiente para esta análise. Tente mudar para um modelo mais robusto (ex: Gemini 2.0 ou GPT-4) nas configurações globais.", msg, modelCfg.Name)
+		}
+
+		sendJSONError(w, msg, http.StatusInternalServerError)
+		return
+	}
+	logger.Info("✅ Auditoria finalizada com sucesso")
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"status": "success",
+		"audit":  result,
+	})
+}
+
+// sendJSONError envia uma resposta de erro em formato JSON
+// POST /api/project/config/exclude - Atualiza padrões de exclusão
+func (h *APIHandler) UpdateExcludePatterns(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Path            string   `json:"path"`
+		ExcludePatterns []string `json:"excludePatterns"`
+	}
+
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		sendJSONError(w, "Payload inválido", http.StatusBadRequest)
+		return
+	}
+
+	configPath := filepath.Join(req.Path, ".spec-wizard", "config.json")
+	data, err := os.ReadFile(configPath)
+	if err != nil {
+		sendJSONError(w, "Projeto não inicializado ou config.json ausente", http.StatusNotFound)
+		return
+	}
+
+	var cfg orchestrator.ProjectConfig
+	if err := json.Unmarshal(data, &cfg); err != nil {
+		sendJSONError(w, "Erro ao ler configuração: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	cfg.ExcludePatterns = req.ExcludePatterns
+
+	updatedData, err := json.MarshalIndent(cfg, "", "  ")
+	if err != nil {
+		sendJSONError(w, "Erro ao processar JSON: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	if err := os.WriteFile(configPath, updatedData, 0644); err != nil {
+		sendJSONError(w, "Erro ao salvar arquivo: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	w.WriteHeader(http.StatusOK)
+	w.Write([]byte("Padrões de exclusão atualizados com sucesso!"))
+}
+
+func sendJSONError(w http.ResponseWriter, message string, code int) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(code)
+	json.NewEncoder(w).Encode(map[string]string{"error": message})
 }

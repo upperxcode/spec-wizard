@@ -18,7 +18,7 @@ type ExecutionContext struct {
 	Summary                string
 	Roadmap                string
 	PrdExcerpt             string
-	SprintID               int
+	SprintID               string
 	SprintGoal             string
 	TaskTitle              string
 	TaskDescription        string
@@ -30,6 +30,8 @@ type ExecutionContext struct {
 	ApiContracts           string
 	UserQuestion           string
 	KnowledgeBase          string
+	Language               string
+	UserLanguage           string
 }
 
 // GenerateExecutionPrompt cria o prompt definitivo para o Harness de Execução
@@ -53,7 +55,7 @@ func (f *PromptFactory) GenerateExecutionPrompt(ctx ExecutionContext) string {
 **ARCHITECTURAL CONTRACT:**
 %s
 
-**CURRENT TASK CONTEXT (SPRINT %d):**
+**CURRENT TASK CONTEXT (SPRINT %s):**
 "Sprint Goal: %s"
 "Specific Task: %s"
 "Description: %s"
@@ -93,6 +95,52 @@ func (f *PromptFactory) GenerateExecutionPrompt(ctx ExecutionContext) string {
 		refFiles,
 		ctx.KnowledgeBase,
 		ctx.Architecture)
+}
+
+// GenerateAuditTaskPrompt cria o prompt para verificar se uma tarefa já foi implementada
+func (f *PromptFactory) GenerateAuditTaskPrompt(ctx ExecutionContext) string {
+	criteria := ""
+	for _, c := range ctx.AcceptanceCriteria {
+		criteria += fmt.Sprintf("- %s\n", c)
+	}
+
+	return fmt.Sprintf(`
+You are a Technical Auditor. Your goal is to verify if a specific task has been correctly implemented in the codebase.
+The project is a %s application.
+
+### TASK TO AUDIT:
+- **Task:** %s
+- **Description:** %s
+- **Acceptance Criteria:**
+%s
+
+### ARCHITECTURAL CONTEXT:
+%s
+
+### EVIDENCE PROVIDED (Starting from Project Root):
+- **File Tree:**
+%s
+- **Critical Context & Root Evidence:**
+%s
+
+### AUDIT RULES:
+1. **ROOT CONTEXT**: The File Tree provided above represents the structure starting from the project root.
+2. **TRUST BUT VERIFY**: Check if the files mentioned in the criteria or description actually exist in the tree. If they are not in the tree, they do not exist.
+3. **STATUS DEFINITIONS**:
+   - **"completed"**: Logic, UI, and necessary services are found and fully implemented according to criteria.
+   - **"in_progress"**: Files exist but implementation is partial, empty, or missing critical logic.
+   - **"pending"**: No relevant files or logic found.
+4. **OUTPUT FORMAT (RAW JSON ONLY)**:
+{
+  "status": "completed | in_progress | pending",
+  "confidence": 0.0 to 1.0,
+  "found_files": ["list of paths"],
+  "reasoning": "Brief explanation of why you chose this status",
+  "missing_logic": ["What is still missing to call it completed"]
+}
+
+Generate the audit now:`,
+		ctx.Language, ctx.TaskTitle, ctx.TaskDescription, criteria, ctx.Spec, ctx.FileTree, ctx.KnowledgeBase)
 }
 
 // GenerateAnchoringPrompt creates the command for the AI to generate PRD and SPEC
@@ -170,8 +218,8 @@ MANDATORY STRUCTURE RULES:
 1. Respond ONLY the raw JSON, no markdown code blocks, no explanations or introductions.
 2. Each Sprint must have a clear technical goal.
 3. Each Task MUST be a complete object (never a string).
-4. Sprint IDs must be 1, 2, 3, 4.
-5. Task IDs must be global incremental (1, 2, 3... until project end).
+4. Sprint IDs must be strings ("1", "2", "3", "4").
+5. Task IDs must be strings ("1", "2", "3"... until project end).
 
 CONTENT RULES:
 - Titles: Must be short and action-focused (e.g., "Configure Provider", "Create User Model").
@@ -185,11 +233,11 @@ EXPECTED JSON SCHEMA:
   "pattern": "%s",
   "sprints": [
     {
-      "id": 1,
+      "id": "1",
       "goal": "Technical goal of the sprint",
       "tasks": [
         {
-          "id": 1,
+          "id": "1",
           "title": "Descriptive title",
           "description": "Explanation of what needs to be done",
           "acceptance_criteria": ["validation 1", "validation 2"],

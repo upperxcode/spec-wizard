@@ -27,14 +27,19 @@ func (o *Orchestrator) GenerateHarnessPrompt(userQuestion string) (string, error
 	var roadmap ProjectRoadmap
 	foundRoadmap := false
 
+	var excludePatterns []string
 	// Tenta config.json primeiro
 	if data, err := os.ReadFile(configPath); err == nil {
 		var config struct {
-			Roadmap *ProjectRoadmap `json:"roadmap"`
+			Roadmap         *ProjectRoadmap `json:"roadmap"`
+			ExcludePatterns []string        `json:"excludePatterns"`
 		}
-		if err := json.Unmarshal(data, &config); err == nil && config.Roadmap != nil {
-			roadmap = *config.Roadmap
-			foundRoadmap = true
+		if err := json.Unmarshal(data, &config); err == nil {
+			if config.Roadmap != nil {
+				roadmap = *config.Roadmap
+				foundRoadmap = true
+			}
+			excludePatterns = config.ExcludePatterns
 		}
 	}
 
@@ -71,7 +76,7 @@ func (o *Orchestrator) GenerateHarnessPrompt(userQuestion string) (string, error
 	}
 
 	// 3. Gerar Metadados de Execução
-	fileTree := o.generateFileTree()
+	fileTree := o.generateFileTree(excludePatterns)
 	dependencies := o.getDependencies()
 	apiContracts := o.extractApiContracts(string(spec))
 
@@ -88,7 +93,7 @@ func (o *Orchestrator) GenerateHarnessPrompt(userQuestion string) (string, error
 		Summary:            string(summary),
 		Roadmap:            string(roadmapMD),
 		PrdExcerpt:         string(prd),
-		SprintID:           currentSprint.ID,
+		SprintID:           string(currentSprint.ID),
 		SprintGoal:         currentSprint.Goal,
 		TaskTitle:          currentTask.Title,
 		TaskDescription:    currentTask.Description,

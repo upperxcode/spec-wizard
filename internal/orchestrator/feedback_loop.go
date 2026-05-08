@@ -1,6 +1,7 @@
 package orchestrator
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"os/exec"
@@ -43,7 +44,7 @@ func NewFeedbackLoop(projectPath, language, userLanguage string, llmClient *llm.
 }
 
 // ExecuteTaskWithFeedback executa uma tarefa com validação e auto-correção
-func (fl *FeedbackLoop) ExecuteTaskWithFeedback(taskCtx *TaskContext, task Task, sprint Sprint) (*ExecutionAttempt, error) {
+func (fl *FeedbackLoop) ExecuteTaskWithFeedback(ctx context.Context, taskCtx *TaskContext, task Task, sprint Sprint) (*ExecutionAttempt, error) {
 	attempt := &ExecutionAttempt{
 		AttemptNumber: 1,
 	}
@@ -54,7 +55,7 @@ func (fl *FeedbackLoop) ExecuteTaskWithFeedback(taskCtx *TaskContext, task Task,
 	prompt := fl.Assembler.BuildPromptForTask(taskCtx)
 	attempt.OriginalPrompt = prompt
 
-	aiResponse, err := fl.LLMClient.Ask(prompt)
+	aiResponse, err := fl.LLMClient.AskWithContext(ctx, prompt, nil)
 	if err != nil {
 		return nil, fmt.Errorf("erro na execução inicial: %v", err)
 	}
@@ -93,7 +94,7 @@ func (fl *FeedbackLoop) ExecuteTaskWithFeedback(taskCtx *TaskContext, task Task,
 		correctionPrompt := fl.buildCorrectionPrompt(taskCtx, attempt)
 		attempt.CorrectionPrompt = correctionPrompt
 
-		correctionResponse, err := fl.LLMClient.Ask(correctionPrompt)
+		correctionResponse, err := fl.LLMClient.AskWithContext(ctx, correctionPrompt, nil)
 		if err != nil {
 			return nil, fmt.Errorf("erro na tentativa de correção %d: %v", attempt.AttemptNumber, err)
 		}

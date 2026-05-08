@@ -167,6 +167,8 @@ func main() {
 	http.HandleFunc("/api/project/generate-roadmap-from-code", handler.GenerateRoadmapFromCode)
 	http.HandleFunc("/api/project/roadmap-prompt", handler.GetRoadmapPrompt)
 	http.HandleFunc("/api/project/save-roadmap", handler.SaveRoadmap)
+	http.HandleFunc("/api/project/audit-task", handler.AuditTaskStatus)
+	http.HandleFunc("/api/project/config/exclude", handler.UpdateExcludePatterns)
 	http.HandleFunc("/api/project/rename", handler.RenameProject)
 	http.HandleFunc("/api/project", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodDelete {

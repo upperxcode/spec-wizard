@@ -1,10 +1,13 @@
 package orchestrator
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
 	"spec-wizard/internal/prompt"
+	"spec-wizard/internal/logger"
+	"spec-wizard/internal/llm"
 
 	"path/filepath"
 	"strings"
@@ -86,6 +89,9 @@ func (o *Orchestrator) GenerateInitialRoadmap(config ProjectConfig) (*ProjectRoa
 		return nil, err
 	}
 
+	// Persiste também a documentação base (SPEC, PRD, Skills) para contexto futuro
+	o.SaveAgentsDocs(config, nil)
+
 	return &roadmap, nil
 }
 
@@ -113,7 +119,7 @@ func (o *Orchestrator) SaveRoadmap(roadmap ProjectRoadmap) error {
 }
 
 // UpdateTaskStatus permite que sensores ou o usuário marquem o progresso
-func (o *Orchestrator) UpdateTaskStatus(sprintID, taskID int, status string) error {
+func (o *Orchestrator) UpdateTaskStatus(sprintID, taskID FlexibleID, status string) error {
 	path := filepath.Join(o.ProjectPath, ".spec-wizard", "sprints.json")
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -140,17 +146,17 @@ func (o *Orchestrator) UpdateTaskStatus(sprintID, taskID int, status string) err
 	}
 
 	if !found {
-		return fmt.Errorf("tarefa %d na sprint %d não encontrada", taskID, sprintID)
+		return fmt.Errorf("tarefa %s na sprint %s não encontrada", taskID, sprintID)
 	}
 
-	return o.saveRoadmapToFile(roadmap)
+	return o.SaveRoadmap(roadmap)
 }
 
 // UpdateRoadmapFromCode gera ou atualiza o roadmap baseando-se no estado atual do código (Processo em 2 Fases)
 func (o *Orchestrator) UpdateRoadmapFromCode(config ProjectConfig) (*ProjectRoadmap, error) {
 	fmt.Printf("🧠 Iniciando Auditoria Técnica em 2 Fases para %s...\n", config.Language)
 
-	fileTree := o.generateFileTree()
+	fileTree := o.generateFileTree(config.ExcludePatterns)
 	criticalContext := o.getCriticalContext()
 
 	prd, _ := o.readProjectDoc(o.ProjectPath, "PRD.md")
@@ -222,9 +228,7 @@ func (o *Orchestrator) UpdateRoadmapFromCode(config ProjectConfig) (*ProjectRoad
 
 	config.RoadmapLastUpdated = time.Now().Format("2006-01-02 15:04:05")
 	o.SaveAgentsDocs(config, nil)
-	o.saveRoadmapToFile(roadmap)
-	o.SaveRoadmapToMarkdown(&roadmap)
-
+	o.SaveRoadmap(roadmap)
 	return &roadmap, nil
 }
 
@@ -232,23 +236,29 @@ func (o *Orchestrator) UpdateRoadmapFromCode(config ProjectConfig) (*ProjectRoad
 func (o *Orchestrator) getCriticalContext() string {
 	var sb strings.Builder
 
-	// 1. Pubspec (fundamental para Flutter)
-	if data, err := os.ReadFile(filepath.Join(o.ProjectPath, "pubspec.yaml")); err == nil {
-		sb.WriteString("FILE: pubspec.yaml\nCONTENT:\n")
-		sb.WriteString(string(data))
-		sb.WriteString("\n---\n")
+	// 1. Evidência de Raiz (Arquivos de Dependências)
+	rootFiles := []string{"go.mod", "package.json", "composer.json", "pubspec.yaml", "requirements.txt", "Gemfile"}
+	for _, rf := range rootFiles {
+		if data, err := os.ReadFile(filepath.Join(o.ProjectPath, rf)); err == nil {
+			sb.WriteString(fmt.Sprintf("FILE: %s (Root Evidence)\nCONTENT:\n", rf))
+			// Pega apenas os primeiros 1000 bytes para prova de identidade
+			content := string(data)
+			if len(content) > 1000 {
+				content = content[:1000] + "... [TRUNCATED]"
+			}
+			sb.WriteString(content)
+			sb.WriteString("\n---\n")
+		}
 	}
 
-	// 2. Peek em controladores (para ver se há lógica real)
+	// 2. Peek em controladores/serviços para ver se há lógica real (Flutter específico)
 	modulesPath := filepath.Join(o.ProjectPath, "lib", "modules")
-	entries, err := os.ReadDir(modulesPath)
-	if err == nil {
+	if entries, err := os.ReadDir(modulesPath); err == nil {
 		for _, entry := range entries {
 			if entry.IsDir() {
 				ctrlPath := filepath.Join(modulesPath, entry.Name(), "controllers")
 				ctrlFiles, err := os.ReadDir(ctrlPath)
 				if err == nil && len(ctrlFiles) > 0 {
-					// Lê os primeiros 500 bytes do primeiro controlador encontrado
 					target := filepath.Join(ctrlPath, ctrlFiles[0].Name())
 					if data, err := os.ReadFile(target); err == nil {
 						content := string(data)
@@ -262,7 +272,129 @@ func (o *Orchestrator) getCriticalContext() string {
 		}
 	}
 
+	// 3. Peek em arquitetura Go (se existir e não for projeto Flutter)
+	internalPath := filepath.Join(o.ProjectPath, "internal")
+	if entries, err := os.ReadDir(internalPath); err == nil && !strings.Contains(sb.String(), "lib/modules") {
+		sb.WriteString("ARCHITECTURE DETECTION: Found 'internal' directory.\n")
+		for i, entry := range entries {
+			if i > 3 {
+				break
+			} // Apenas os primeiros 4 para evidência
+			sb.WriteString(fmt.Sprintf("- internal/%s\n", entry.Name()))
+		}
+		sb.WriteString("---\n")
+	}
+
 	return sb.String()
+}
+
+// AuditResult representa o resultado de uma auditoria de tarefa via IA
+type AuditResult struct {
+	Status       string   `json:"status"`
+	Confidence   float64  `json:"confidence"`
+	FoundFiles   []string `json:"found_files"`
+	Reasoning    string   `json:"reasoning"`
+	MissingLogic []string `json:"missing_logic"`
+}
+
+// AuditTask verifica se uma tarefa específica já foi implementada no código
+func (o *Orchestrator) AuditTask(ctx context.Context, sprintID, taskID FlexibleID, config ProjectConfig) (*AuditResult, error) {
+	fmt.Printf("🔍 Auditando tarefa %s da Sprint %s...\n", taskID, sprintID)
+
+	var roadmap ProjectRoadmap
+
+	// 1. Tenta carregar do config.Roadmap se disponível
+	if config.Roadmap != nil {
+		// Converte interface{} para ProjectRoadmap
+		roadmapData, _ := json.Marshal(config.Roadmap)
+		json.Unmarshal(roadmapData, &roadmap)
+	}
+
+	// 2. Fallback para sprints.json se o roadmap estiver vazio
+	if len(roadmap.Sprints) == 0 {
+		path := filepath.Join(o.ProjectPath, ".spec-wizard", "sprints.json")
+		data, err := os.ReadFile(path)
+		if err == nil {
+			json.Unmarshal(data, &roadmap)
+		}
+	}
+
+	if len(roadmap.Sprints) == 0 {
+		return nil, fmt.Errorf("roadmap não encontrado ou vazio")
+	}
+
+	var targetTask *Task
+	var targetSprint *Sprint
+	for i := range roadmap.Sprints {
+		if roadmap.Sprints[i].ID == sprintID {
+			targetSprint = &roadmap.Sprints[i]
+			for j := range roadmap.Sprints[i].Tasks {
+				if roadmap.Sprints[i].Tasks[j].ID == taskID {
+					targetTask = &roadmap.Sprints[i].Tasks[j]
+					break
+				}
+			}
+		}
+	}
+
+	if targetTask == nil {
+		return nil, fmt.Errorf("tarefa %s não encontrada na Sprint %s", taskID, sprintID)
+	}
+
+	// 2. Monta o contexto da tarefa (Clean Window)
+	assembler := NewContextAssembler(o.ProjectPath)
+	taskContext, err := assembler.AssembleTaskContext(*targetTask, *targetSprint, o.Plugins)
+	if err != nil {
+		return nil, err
+	}
+
+	// 3. Gera o prompt de auditoria
+	factory := prompt.NewPromptFactory()
+	auditPrompt := factory.GenerateAuditTaskPrompt(prompt.ExecutionContext{
+		TaskTitle:          targetTask.Title,
+		TaskDescription:    targetTask.Description,
+		AcceptanceCriteria: targetTask.AcceptanceCriteria,
+		Spec:               taskContext.Spec,
+		FileTree:           o.generateFileTree(config.ExcludePatterns),
+		KnowledgeBase:      o.getCriticalContext(), // Reutiliza o peek de arquivos para evidência
+		Language:           config.Language,
+		UserLanguage:       config.UserLanguage,
+	})
+
+	// 4. Consulta a IA
+	llmClient, err := o.GetLLMClient(config)
+	if err != nil {
+		return nil, err
+	}
+
+	rawResponse, err := llmClient.AskWithContext(ctx, auditPrompt, nil)
+	if err != nil {
+		if err == llm.ErrEmptyResponse {
+			return nil, fmt.Errorf("a IA retornou uma resposta vazia. Isso pode acontecer se o modelo estiver instável ou se o contexto for muito grande. Tente simplificar a tarefa ou mudar o modelo.")
+		}
+		return nil, err
+	}
+
+	logger.Info("✅ Resposta da IA recebida para auditoria", "length", len(rawResponse))
+
+	cleanedJSON := CleanJSONResponse(rawResponse)
+	if cleanedJSON == "" {
+		return nil, fmt.Errorf("a resposta da IA não contém um JSON válido ou está vazia")
+	}
+	var result AuditResult
+	if err := json.Unmarshal([]byte(cleanedJSON), &result); err != nil {
+		logger.Error("❌ Erro ao decodificar JSON da auditoria", err, "raw", rawResponse, "cleaned", cleanedJSON)
+		return nil, fmt.Errorf("erro ao processar resposta da auditoria: %v | Resposta Bruta capturada no log", err)
+	}
+
+	// 5. Se a IA confirmou que está "completed" e a confiança é alta, atualiza o status
+	if result.Status == "completed" && result.Confidence >= 0.7 {
+		o.UpdateTaskStatus(sprintID, taskID, "completed")
+	} else if result.Status == "in_progress" {
+		o.UpdateTaskStatus(sprintID, taskID, "in_progress")
+	}
+
+	return &result, nil
 }
 
 // SaveRoadmapToMarkdown gera uma versão amigável do roadmap em .md
@@ -276,7 +408,7 @@ func (o *Orchestrator) SaveRoadmapToMarkdown(roadmap *ProjectRoadmap) error {
 	sb.WriteString(fmt.Sprintf("- **Pattern**: %s\n\n", roadmap.Pattern))
 
 	for _, sprint := range roadmap.Sprints {
-		sb.WriteString(fmt.Sprintf("## Sprint %d: %s\n", sprint.ID, sprint.Goal))
+		sb.WriteString(fmt.Sprintf("## Sprint %s: %s\n", sprint.ID, sprint.Goal))
 		for _, task := range sprint.Tasks {
 			statusIcon := "⏳"
 			if task.Status == "completed" {
@@ -302,12 +434,32 @@ func (o *Orchestrator) SaveRoadmapToMarkdown(roadmap *ProjectRoadmap) error {
 	sb.WriteString("*End of Audited Strategic Roadmap*\n")
 
 	wizardDir := filepath.Join(o.ProjectPath, ".spec-wizard")
-	return os.WriteFile(filepath.Join(wizardDir, "roadmap.md"), []byte(sb.String()), 0644)
+	os.WriteFile(filepath.Join(wizardDir, "roadmap.md"), []byte(sb.String()), 0644)
+	
+	// Também salva na raiz do projeto para visibilidade imediata do usuário
+	return os.WriteFile(filepath.Join(o.ProjectPath, "roadmap.md"), []byte(sb.String()), 0644)
+}
+
+// generateStrategicRoadmap gera o conteúdo do roadmap baseado nos inputs
+func (o *Orchestrator) generateStrategicRoadmap(config ProjectConfig) (string, error) {
+	fileTree := o.generateFileTree(config.ExcludePatterns)
+	prd, _ := o.readProjectDoc(o.ProjectPath, "PRD.md")
+	spec, _ := o.readProjectDoc(o.ProjectPath, "SPEC.md")
+
+	factory := prompt.NewPromptFactory()
+	mappingPrompt := factory.CreateModuleMappingPrompt(prompt.RoadmapContext{
+		Language:     config.Language,
+		PRD:          prd,
+		Spec:         spec,
+		UserLanguage: config.UserLanguage,
+	}, fileTree)
+
+	return mappingPrompt, nil
 }
 
 // PreviewRoadmapPrompt apenas retorna o prompt que seria enviado, sem chamar a IA
 func (o *Orchestrator) PreviewRoadmapPrompt(config ProjectConfig) string {
-	fileTree := o.generateFileTree()
+	fileTree := o.generateFileTree(config.ExcludePatterns)
 	prd, _ := o.readProjectDoc(o.ProjectPath, "PRD.md")
 	spec, _ := o.readProjectDoc(o.ProjectPath, "SPEC.md")
 	skills, _ := o.readProjectDoc(o.ProjectPath, "skills.md")
@@ -341,3 +493,4 @@ func (o *Orchestrator) PreviewRoadmapPrompt(config ProjectConfig) string {
 
 	return fmt.Sprintf("--- PHASE 1: MODULE MAPPING PROMPT ---\n%s\n\n--- PHASE 2: STRATEGIC ROADMAP PROMPT ---\n%s", mappingPrompt, roadmapPrompt)
 }
+

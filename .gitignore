@@ -16,4 +16,12 @@ dist/
 .zed/
 demo-app/
 
+*.log
+
+server
+server-wizard
+wizard-server
+main
+run-integration.sh
+spec-wizard
 

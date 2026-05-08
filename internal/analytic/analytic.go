@@ -73,6 +73,9 @@ func StartLLMCall(ctx context.Context, provider, model string) time.Time {
 }
 
 func EndLLMCall(session *Session, name string, start time.Time, pTokens, cTokens int, err error) {
+	if session == nil {
+		return
+	}
 	meta := map[string]any{
 		"p_tokens": pTokens,
 		"c_tokens": cTokens,
@@ -84,6 +87,9 @@ func EndLLMCall(session *Session, name string, start time.Time, pTokens, cTokens
 }
 
 func RecordTool(session *Session, name string, start time.Time, args any, err error) {
+	if session == nil {
+		return
+	}
 	meta := map[string]any{
 		"args": args,
 	}

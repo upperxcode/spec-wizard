@@ -142,7 +142,7 @@ func GenerateRoadmapMarkdown(rawRoadmap interface{}) string {
 	sb.WriteString(fmt.Sprintf("- **Pattern**: %s\n\n", roadmap.Pattern))
 
 	for _, sprint := range roadmap.Sprints {
-		sb.WriteString(fmt.Sprintf("## Sprint %d: %s\n", sprint.ID, sprint.Goal))
+		sb.WriteString(fmt.Sprintf("## Sprint %s: %s\n", sprint.ID, sprint.Goal))
 		for _, task := range sprint.Tasks {
 			statusIcon := "⏳"
 			if task.Status == "completed" {

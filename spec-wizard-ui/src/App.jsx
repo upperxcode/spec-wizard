@@ -103,6 +103,8 @@ function App() {
   const [domainViewMode, setDomainViewMode] = useState('edit'); // 'edit' ou 'preview'
   const [pathStatus, setPathStatus] = useState({ initialized: false, hasCode: false, metadata: null });
   const [workspaceProjects, setWorkspaceProjects] = useState([]);
+  const [auditingTaskIds, setAuditingTaskIds] = useState(new Set());
+  const [viewingTaskPrompt, setViewingTaskPrompt] = useState(null); // { title: string, prompt: string }
   const abortControllerRef = useRef(null);
 
   const [formData, setFormData] = useState({
@@ -192,6 +194,34 @@ function App() {
       setWorkspaceProjects(data);
     } catch (err) {
       console.error("Erro ao carregar workspace:", err);
+    }
+  };
+
+  const removeProjectFromWorkspace = async (e, path) => {
+    e.stopPropagation();
+    if (!window.confirm(t('confirm_remove_project'))) return;
+
+    try {
+      await apiRequest(`/workspace/projects?path=${encodeURIComponent(path)}`, { method: 'DELETE' });
+      fetchWorkspaceProjects();
+      alert(t('project_removed'));
+    } catch (err) {
+      console.error("Erro ao remover projeto:", err);
+      alert(t('error_loading'));
+    }
+  };
+
+  const deleteProjectAnchor = async (e, path) => {
+    e.stopPropagation();
+    if (!window.confirm(t('confirm_delete_anchor'))) return;
+
+    try {
+      await apiRequest(`/project?path=${encodeURIComponent(path)}`, { method: 'DELETE' });
+      fetchWorkspaceProjects();
+      alert(t('anchor_deleted'));
+    } catch (err) {
+      console.error("Erro ao deletar âncora:", err);
+      alert(t('error_loading'));
     }
   };
 
@@ -1020,6 +1050,87 @@ function App() {
     }
   };
 
+  const handleViewTaskPrompt = async (sprint, task) => {
+    try {
+      setLoading(true);
+      const response = await apiRequest('/project/generate-prompt', {
+        method: 'POST',
+        body: JSON.stringify({
+          project_path: formData.path,
+          sprint: sprint,
+          task: task
+        })
+      });
+      const data = await response.json();
+      if (data.prompt) {
+        setViewingTaskPrompt({ title: task.title, prompt: data.prompt });
+      }
+    } catch (err) {
+      console.error("Erro ao carregar prompt:", err);
+      alert(t('error_loading'));
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleAuditTask = async (sprint, task) => {
+    const startMsg = `🔍 Iniciando auditoria técnica: ${task.title}`;
+    setLogs(prev => [...prev, { time: new Date().toLocaleTimeString(), msg: startMsg, type: 'info' }]);
+
+    try {
+      setAuditingTaskIds(prev => new Set([...prev, task.id]));
+      const response = await apiRequest('/project/audit-task', {
+        method: 'POST',
+        body: JSON.stringify({
+          project_path: formData.path,
+          sprint_id: sprint.id,
+          task_id: task.id
+        })
+      });
+      const data = await response.json();
+      
+      if (data.audit) {
+        const confidence = Math.round(data.audit.confidence * 100);
+        const successMsg = `✅ Auditoria concluída: ${task.title} | Confiança: ${confidence}% | Status sugerido: ${data.audit.status?.toUpperCase() || 'N/A'}`;
+        setLogs(prev => [...prev, { 
+          time: new Date().toLocaleTimeString(), 
+          msg: successMsg, 
+          type: 'success' 
+        }]);
+        
+        if (data.audit.reasoning) {
+          setLogs(prev => [...prev, { 
+            time: new Date().toLocaleTimeString(), 
+            msg: `🧠 Raciocínio: ${data.audit.reasoning}`, 
+            type: 'info' 
+          }]);
+        }
+
+        // Recarregar o roadmap para refletir as mudanças de status (que agora atualizam o .md também)
+        checkProjectStatus(formData.path);
+      } else {
+        setLogs(prev => [...prev, { 
+          time: new Date().toLocaleTimeString(), 
+          msg: `❌ Falha na auditoria: ${data.message || 'Sem resposta estruturada'}`, 
+          type: 'error' 
+        }]);
+      }
+    } catch (err) {
+      console.error("Erro na auditoria:", err);
+      setLogs(prev => [...prev, { 
+        time: new Date().toLocaleTimeString(), 
+        msg: `❌ Erro de conexão durante a auditoria.`, 
+        type: 'error' 
+      }]);
+    } finally {
+      setAuditingTaskIds(prev => {
+        const next = new Set(prev);
+        next.delete(task.id);
+        return next;
+      });
+    }
+  };
+
   const executeTask = async (sprint, task) => {
     setExecutingTask(task.id);
     const logMsg = `Iniciando Sprint ${sprint.id} - Tarefa ${task.id}: ${task.title}`;
@@ -1061,6 +1172,9 @@ function App() {
           return s;
         });
         setRoadmap(updatedRoadmap);
+        
+        // Sincronizar com o backend para garantir que o roadmap.md na raiz esteja batendo
+        checkProjectStatus(formData.path);
       } else {
         setLogs(prev => [...prev, { 
           time: new Date().toLocaleTimeString(), 
@@ -1402,8 +1516,22 @@ function App() {
                       }}
                       className="group bg-white p-6 rounded-3xl border border-slate-200/60 hover:border-blue-300 hover:shadow-xl hover:shadow-blue-500/5 transition-all cursor-pointer relative overflow-hidden"
                     >
-                      <div className="absolute top-0 right-0 p-4 opacity-0 group-hover:opacity-100 transition-opacity">
-                         <div className="w-8 h-8 bg-blue-50 text-blue-600 rounded-full flex items-center justify-center">
+                      <div className="absolute top-0 right-0 p-4 flex gap-2 opacity-0 group-hover:opacity-100 transition-opacity z-10">
+                        <button 
+                          onClick={(e) => { e.stopPropagation(); removeProjectFromWorkspace(e, project.path); }}
+                          title={t('remove_from_workspace')}
+                          className="w-8 h-8 bg-white/80 hover:bg-amber-50 text-slate-400 hover:text-amber-500 rounded-full flex items-center justify-center shadow-sm border border-slate-100 transition-all"
+                        >
+                          <X size={14} />
+                        </button>
+                        <button 
+                          onClick={(e) => { e.stopPropagation(); deleteProjectAnchor(e, project.path); }}
+                          title={t('delete_project_data')}
+                          className="w-8 h-8 bg-white/80 hover:bg-rose-50 text-slate-400 hover:text-rose-600 rounded-full flex items-center justify-center shadow-sm border border-slate-100 transition-all"
+                        >
+                          <Trash2 size={14} />
+                        </button>
+                         <div className="w-8 h-8 bg-blue-50 text-blue-600 rounded-full flex items-center justify-center shadow-sm">
                             <ChevronRight size={18} />
                          </div>
                       </div>
@@ -1552,7 +1680,7 @@ function App() {
                           >
                             <option value="">{t('select_expert')}</option>
                             {languages.map(lang => (
-                              <option key={lang} value={lang}>{lang.toUpperCase()}</option>
+                              <option key={lang} value={lang}>{lang?.toUpperCase() || lang}</option>
                             ))}
                           </select>
                         </div>
@@ -1871,10 +1999,10 @@ function App() {
                   <h2 className="text-3xl font-bold text-slate-900 mb-2">{t('roadmap_title')}</h2>
                   <div className="flex items-center gap-4">
                     <span className="px-3 py-1 bg-blue-50 text-blue-600 rounded-lg text-xs font-bold flex items-center gap-1">
-                      <Code2 size={14} /> {roadmap.language.toUpperCase()}
+                      <Code2 size={14} /> {(roadmap?.language?.toUpperCase() || 'N/A')}
                     </span>
                     <span className="px-3 py-1 bg-indigo-50 text-indigo-600 rounded-lg text-xs font-bold flex items-center gap-1">
-                      <Layout size={14} /> {roadmap.pattern}
+                      <Layout size={14} /> {roadmap?.pattern || 'N/A'}
                     </span>
                     {roadmapLastUpdated && (
                       <span className="text-slate-400 text-[10px] font-medium flex items-center gap-1">
@@ -1932,7 +2060,7 @@ function App() {
                       ref={provided.innerRef}
                       className="space-y-12"
                     >
-                {roadmap.sprints.map((sprint, index) => {
+                {roadmap?.sprints?.map((sprint, index) => {
                   const isSprintCollapsed = collapsedSprints.includes(sprint.id);
                   return (
                     <Draggable key={sprint.id} draggableId={`sprint-${sprint.id}`} index={index}>
@@ -1990,7 +2118,7 @@ function App() {
                                   ref={provided.innerRef}
                                   className={`grid gap-5 min-h-[50px] transition-all rounded-3xl p-2 ${snapshot.isDraggingOver ? 'bg-indigo-50/50 ring-2 ring-indigo-200/50 ring-dashed' : ''}`}
                                 >
-                                  {sprint.tasks.map((task, taskIndex) => {
+                                  {sprint?.tasks?.map((task, taskIndex) => {
                                     const isTaskCollapsed = collapsedTasks.includes(task.id);
                                     return (
                                       <Draggable key={task.id} draggableId={`task-${task.id}`} index={taskIndex}>
@@ -2072,14 +2200,33 @@ function App() {
             
                                                     <div className="flex items-center gap-3 mt-6">
                                                       {task.status !== 'completed' && (
+                                                          <button 
+                                                            onClick={() => executeTask(sprint, task)}
+                                                            disabled={executingTask !== null}
+                                                            className="flex items-center gap-2 px-6 py-2.5 bg-blue-600 text-white rounded-2xl text-xs font-bold hover:bg-blue-700 disabled:bg-slate-200 shadow-lg shadow-blue-100 transition-all"
+                                                          >
+                                                            {executingTask === task.id ? t('executing') : <><Play size={14} /> {t('execute')}</>}
+                                                          </button>
+                                                        )}
+              
                                                         <button 
-                                                          onClick={() => executeTask(sprint, task)}
-                                                          disabled={executingTask !== null}
-                                                          className="flex items-center gap-2 px-6 py-2.5 bg-blue-600 text-white rounded-2xl text-xs font-bold hover:bg-blue-700 disabled:bg-slate-200 shadow-lg shadow-blue-100 transition-all"
+                                                          onClick={() => handleViewTaskPrompt(sprint, task)}
+                                                          className="flex items-center gap-2 px-4 py-2.5 bg-slate-100 text-slate-600 rounded-2xl text-xs font-bold hover:bg-slate-200 transition-all"
                                                         >
-                                                          {executingTask === task.id ? t('executing') : <><Play size={14} /> {t('execute')}</>}
+                                                          <Eye size={14} /> {t('view_task_prompt')}
                                                         </button>
-                                                      )}
+
+                                                        <button 
+                                                          onClick={() => handleAuditTask(sprint, task)}
+                                                          disabled={auditingTaskIds.has(task.id)}
+                                                          className="flex items-center gap-2 px-4 py-2.5 bg-indigo-50 text-indigo-600 border border-indigo-100 rounded-2xl text-xs font-bold hover:bg-indigo-100 transition-all"
+                                                        >
+                                                          {auditingTaskIds.has(task.id) ? (
+                                                            <><RefreshCw size={14} className="animate-spin" /> {t('auditing')}</>
+                                                          ) : (
+                                                            <><RefreshCw size={14} /> {t('audit_status')}</>
+                                                          )}
+                                                        </button>
             
                                                       {task.status === 'completed' && (
                                                         <>
@@ -2262,6 +2409,50 @@ function App() {
                         className="flex-1 px-8 py-4 bg-indigo-600 text-white rounded-2xl font-bold shadow-xl shadow-indigo-200 hover:bg-indigo-700 transition-all flex items-center justify-center gap-2"
                       >
                         <Save size={18} /> {t('save_changes')}
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {/* TASK PROMPT VIEWER MODAL */}
+              {viewingTaskPrompt && (
+                <div className="fixed inset-0 bg-slate-900/80 backdrop-blur-md z-[110] flex items-center justify-center p-8 animate-in fade-in duration-300">
+                  <div className="bg-white rounded-[40px] shadow-2xl w-full max-w-4xl overflow-hidden flex flex-col max-h-[90vh] animate-in zoom-in-95 duration-300">
+                    <div className="px-10 py-8 border-b border-slate-100 flex items-center justify-between bg-slate-50/50">
+                      <div>
+                        <h3 className="text-2xl font-black text-slate-800 tracking-tight">{t('view_task_prompt')}</h3>
+                        <p className="text-slate-400 text-sm font-medium">{viewingTaskPrompt.title}</p>
+                      </div>
+                      <div className="flex items-center gap-4">
+                        <button 
+                          onClick={() => {
+                            navigator.clipboard.writeText(viewingTaskPrompt.prompt);
+                            alert(t('prompt_copied'));
+                          }}
+                          className="flex items-center gap-2 px-6 py-3 bg-indigo-600 text-white rounded-2xl text-sm font-bold shadow-xl shadow-indigo-200 hover:bg-indigo-700 transition-all"
+                        >
+                          <Copy size={18} /> {t('copy_prompt')}
+                        </button>
+                        <button 
+                          onClick={() => setViewingTaskPrompt(null)}
+                          className="w-12 h-12 flex items-center justify-center rounded-2xl text-slate-400 hover:bg-slate-100 hover:text-slate-600 transition-all"
+                        >
+                          <X size={24} />
+                        </button>
+                      </div>
+                    </div>
+                    <div className="flex-1 overflow-y-auto p-10 bg-slate-900">
+                      <pre className="text-blue-200 font-mono text-sm leading-relaxed whitespace-pre-wrap">
+                        {viewingTaskPrompt.prompt}
+                      </pre>
+                    </div>
+                    <div className="px-10 py-6 border-t border-slate-100 bg-slate-50/50 text-right">
+                      <button 
+                        onClick={() => setViewingTaskPrompt(null)}
+                        className="px-8 py-3 bg-white border border-slate-200 text-slate-600 rounded-xl font-bold hover:bg-slate-50 transition-all"
+                      >
+                        {t('close')}
                       </button>
                     </div>
                   </div>

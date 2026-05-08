@@ -12,6 +12,10 @@ import (
 	"time"
 )
 
+var (
+	ErrEmptyResponse = fmt.Errorf("a IA retornou uma resposta vazia")
+)
+
 type LLMClient struct {
 	Provider     Provider
 	Model        string
@@ -153,12 +157,17 @@ func (c *LLMClient) AskWithContext(ctx context.Context, prompt string, session *
 		}
 
 		startLLM := analytic.StartLLMCall(ctx, c.Provider.Name(), c.Model)
+		startTime := time.Now()
 		resp, err := c.Provider.Chat(ctx, c.Model, messages, tools)
-		analytic.EndLLMCall(session, fmt.Sprintf("LLM Call %d", i+1), startLLM, resp.Usage.PromptTokens, resp.Usage.CompletionTokens, err)
+		duration := time.Since(startTime)
 
 		if err != nil {
+			analytic.EndLLMCall(session, fmt.Sprintf("LLM Call %d", i+1), startLLM, 0, 0, err)
 			return "", err
 		}
+
+		logger.Info("✨ IA respondeu", "duration", duration.String(), "provider", c.Provider.Name())
+		analytic.EndLLMCall(session, fmt.Sprintf("LLM Call %d", i+1), startLLM, resp.Usage.PromptTokens, resp.Usage.CompletionTokens, nil)
 
 		messages = append(messages, Message{
 			Role:      resp.Role,
@@ -167,6 +176,14 @@ func (c *LLMClient) AskWithContext(ctx context.Context, prompt string, session *
 		})
 
 		if len(resp.ToolCalls) == 0 {
+			if resp.Content == "" {
+				if i < 2 { // Tenta até 2 vezes um "nudge" se vier vazio
+					logger.Info("⚠️ IA retornou resposta vazia. Tentando 'nudge'...", "iteration", i)
+					messages = append(messages, Message{Role: "user", Content: "Please provide your analysis or the requested JSON output."})
+					continue
+				}
+				return "", ErrEmptyResponse
+			}
 			return resp.Content, nil
 		}
 

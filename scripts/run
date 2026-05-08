@@ -1,0 +1,164 @@
+#!/bin/bash
+
+# Colors for better UI
+GREEN='\033[0;32m'
+BLUE='\033[0;34m'
+YELLOW='\033[1;33m'
+RED='\033[0;31m'
+NC='\033[0m' # No Color
+
+PROJECT_ROOT=$(pwd)
+GO_SERVER_DIR="$PROJECT_ROOT"
+UI_DIR="$GO_SERVER_DIR/spec-wizard-ui"
+
+function show_menu() {
+    clear
+    echo -e "${BLUE}🧙‍♂️ Spec Wizard - Menu de Execução${NC}"
+    echo "-----------------------------------"
+    echo -e "1) ${GREEN}Rodar Servidor Go (Dev)${NC}"
+    echo -e "2) ${GREEN}Rodar Dashboard React (UI)${NC}"
+    echo -e "3) ${YELLOW}Build Servidor Go${NC}"
+    echo -e "4) ${BLUE}Rodar Testes de Unidade (Go)${NC}"
+    echo -e "5) ${BLUE}Rodar Teste de Integração API${NC}"
+    echo -e "6) ${RED}Limpar Porta 8080 (Kill)${NC}"
+    echo -e "7) ${GREEN}Rodar Tudo (Full Stack)${NC}"
+    echo -e "8) ${BLUE}Rodar TUI (Terminal)${NC}"
+    echo -e "9) ${RED}Sair${NC}"
+    echo "-----------------------------------"
+    read -p "Escolha uma opção [1-9]: " choice
+    
+    case $choice in
+        1) run_server ;;
+        2) run_ui ;;
+        3) build_server ;;
+        4) run_tests ;;
+        5) run_integration ;;
+        6) clean_port 8080 ;;
+        7) run_all ;;
+        8) run_tui ;;
+        9) exit 0 ;;
+        *) echo "Opção inválida"; sleep 1; show_menu ;;
+    esac
+}
+
+function run_tui() {
+    echo -e "${BLUE}🚀 Iniciando Spec Wizard TUI...${NC}"
+    cd "$GO_SERVER_DIR" || exit
+    go run cmd/main.go --tui --path "$PROJECT_ROOT"
+}
+
+function clean_port() {
+    PORT=${1:-8080}
+    echo -e "${YELLOW}🧹 Limpando porta $PORT...${NC}"
+    PID=$(lsof -t -i:$PORT)
+    if [ -n "$PID" ]; then
+        echo -e "${RED}Encontrado processo $PID na porta $PORT. Finalizando...${NC}"
+        kill -9 $PID
+        echo -e "${GREEN}Porta $PORT liberada!${NC}"
+    else
+        echo -e "${BLUE}Porta $PORT já está livre.${NC}"
+    fi
+}
+
+function run_all() {
+    echo -e "${BLUE}🌟 Iniciando Ecossistema Completo (Full Stack)...${NC}"
+    clean_port 8080
+    clean_port 5173
+    
+    echo -e "${GREEN}🚀 Servidor Go (Porta 8080)...${NC}"
+    cd "$GO_SERVER_DIR" || exit
+    go run cmd/main.go --path "$PROJECT_ROOT" > "$PROJECT_ROOT/server.log" 2>&1 &
+    SERVER_PID=$!
+    
+    echo -e "${GREEN}🎨 Dashboard React (Porta 5173)...${NC}"
+    cd "$UI_DIR" || exit
+    npm run dev > "$PROJECT_ROOT/ui.log" 2>&1 &
+    UI_PID=$!
+    
+    echo -e "-----------------------------------"
+    echo -e "✅ ${GREEN}Sistema em execução!${NC}"
+    echo -e "- Backend: http://localhost:8080 (Log: server.log)"
+    echo -e "- Frontend: http://localhost:5173 (Log: ui.log)"
+    echo "-----------------------------------"
+    echo -e "${YELLOW}Pressione Ctrl+C para encerrar ambos os servidores...${NC}"
+    
+    trap "kill $SERVER_PID $UI_PID 2>/dev/null; echo -e '\n${RED}Servidores encerrados.${NC}'; exit" SIGINT
+    wait
+}
+
+function run_server() {
+    if lsof -i :8080 > /dev/null; then
+        echo -e "${RED}❌ Porta 8080 está ocupada!${NC}"
+        read -p "Deseja liberar a porta agora? (y/n): " clean_choice
+        if [ "$clean_choice" == "y" ]; then
+            clean_port 8080
+        fi
+    fi
+    echo -e "${GREEN}🚀 Iniciando Servidor Go...${NC}"
+    cd "$GO_SERVER_DIR" || exit
+    go run cmd/main.go --path "$PROJECT_ROOT"
+}
+
+function run_ui() {
+    echo -e "${GREEN}🎨 Iniciando Dashboard React...${NC}"
+    cd "$UI_DIR" || exit
+    npm run dev
+}
+
+function build_server() {
+    echo -e "${YELLOW}🏗️ Compilando Servidor Go...${NC}"
+    cd "$GO_SERVER_DIR" || exit
+    go build -o server cmd/main.go
+    echo -e "${GREEN}✅ Build concluído: $GO_SERVER_DIR/server${NC}"
+}
+
+function run_tests() {
+    echo -e "${BLUE}🧪 Rodando Testes Go...${NC}"
+    cd "$GO_SERVER_DIR" || exit
+    go test ./... -v
+}
+
+function run_integration() {
+    echo -e "${BLUE}🔗 Rodando Teste de Integração...${NC}"
+    cd "$GO_SERVER_DIR" || exit
+    # Garante que o servidor de teste está rodando ou avisa
+    if ! lsof -i :8080 > /dev/null; then
+        echo -e "${YELLOW}⚠️ Aviso: O servidor precisa estar rodando na porta 8080 para este teste.${NC}"
+        echo "Deseja iniciar o servidor em background agora? (y/n)"
+        read -r start_server
+        if [ "$start_server" == "y" ]; then
+            go run cmd/main.go > /dev/null 2>&1 &
+            SERVER_PID=$!
+            sleep 2
+        fi
+    fi
+    bash test_integration.sh
+    if [ -n "$SERVER_PID" ]; then
+        kill "$SERVER_PID"
+    fi
+}
+
+# CLI Argument parsing
+if [ $# -eq 0 ]; then
+    show_menu
+else
+    case $1 in
+        "server"|"dev") run_server ;;
+        "ui") run_ui ;;
+        "tui") run_tui ;;
+        "all") run_all ;;
+        "build") build_server ;;
+        "test") run_tests ;;
+        "integration") run_integration ;;
+        "clean") clean_port ${2:-8080} ;;
+        "help")
+            echo "Uso: ./scripts/run [comando]"
+            echo "Comandos disponíveis: server, ui, tui, all, build, test, integration, clean"
+            ;;
+        *)
+            echo -e "${RED}Erro: Comando desconhecido '$1'${NC}"
+            echo "Use './scripts/run help' para ver as opções."
+            exit 1
+            ;;
+    esac
+fi
