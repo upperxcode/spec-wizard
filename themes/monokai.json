@@ -1,0 +1,14 @@
+{
+	"name": "monokai",
+	"wizard_border": "#F92672",
+	"user_border": "#A6E22E",
+	"command_border": "#FD971F",
+	"title": "#F92672",
+	"project": "#A6E22E",
+	"footer_bg": "#272822",
+	"footer_wizard_bg": "#F92672",
+	"footer_mode_bg": "#3E3D32",
+	"footer_provider_bg": "#A6E22E",
+	"footer_model_bg": "#F8F8F2",
+	"text": "#F8F8F2"
+}

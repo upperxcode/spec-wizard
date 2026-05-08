@@ -1,0 +1,14 @@
+{
+	"name": "nord",
+	"wizard_border": "#88C0D0",
+	"user_border": "#A3BE8C",
+	"command_border": "#EBCB8B",
+	"title": "#88C0D0",
+	"project": "#A3BE8C",
+	"footer_bg": "#2E3440",
+	"footer_wizard_bg": "#4C566A",
+	"footer_mode_bg": "#434C5E",
+	"footer_provider_bg": "#81A1C1",
+	"footer_model_bg": "#D8DEE9",
+	"text": "#D8DEE9"
+}

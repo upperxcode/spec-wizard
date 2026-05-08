@@ -1,0 +1,14 @@
+{
+	"name": "atom",
+	"wizard_border": "#61AFEF",
+	"user_border": "#98C379",
+	"command_border": "#E5C07B",
+	"title": "#61AFEF",
+	"project": "#98C379",
+	"footer_bg": "#282C34",
+	"footer_wizard_bg": "#61AFEF",
+	"footer_mode_bg": "#353B45",
+	"footer_provider_bg": "#98C379",
+	"footer_model_bg": "#ABB2BF",
+	"text": "#ABB2BF"
+}

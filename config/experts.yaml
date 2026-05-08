@@ -1,0 +1,11 @@
+experts:
+  - id: "flutter-expert"
+    language: "flutter"
+    start_command: "cd plugins/flutter-expert-python && source venv/bin/activate && python main.py"
+    triggers:
+      - "pubspec.yaml"
+  - id: "go-expert"
+    language: "go"
+    start_command: "cd plugins/go-expert && ./expert"
+    triggers:
+      - "go.mod"

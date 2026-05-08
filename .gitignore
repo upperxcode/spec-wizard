@@ -1,0 +1,19 @@
+# Ignorar arquivos de sistema
+.DS_Store
+Thumbs.db
+
+# Ignorar pastas
+node_modules/
+dist/
+
+# Ignorar arquivos de configuração sensíveis
+.env
+
+
+
+.spec-wizard/
+.continue/
+.zed/
+demo-app/
+
+
