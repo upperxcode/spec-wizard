@@ -40,7 +40,7 @@ func (p *GeminiProvider) Chat(ctx context.Context, model string, messages []Mess
 		if role == "assistant" {
 			role = "model"
 		}
-		
+
 		contents = append(contents, &genai.Content{
 			Role: role,
 			Parts: []*genai.Part{

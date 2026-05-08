@@ -30,10 +30,17 @@ type ActiveConfig struct {
 	Model    string `json:"model"`
 }
 
+type ProjectEntry struct {
+	Name string `json:"name"`
+	Path string `json:"path"`
+}
+
 type GlobalConfig struct {
-	Active    ActiveConfig     `json:"active"`
-	Providers []ProviderConfig `json:"providers"`
-	Theme     string           `json:"theme"`
+	Active        ActiveConfig     `json:"active"`
+	Providers     []ProviderConfig `json:"providers"`
+	Theme         string           `json:"theme"`
+	Projects      []ProjectEntry   `json:"projects"`
+	ActiveProject string           `json:"active_project"`
 }
 
 type Engine struct {
@@ -41,6 +48,7 @@ type Engine struct {
 	cfg  GlobalConfig
 	path string
 }
+
 
 
 func NewEngine(configPath string) (*Engine, error) {
@@ -58,8 +66,46 @@ func NewEngine(configPath string) (*Engine, error) {
 			return nil, err
 		}
 	}
-	
+	if err := e.SetupThemesDir(); err != nil {
+		fmt.Printf("⚠️ Aviso: não foi possível configurar a pasta global de temas: %v\n", err)
+	}
+
 	return e, nil
+}
+
+func (e *Engine) GetThemesDir() string {
+	return filepath.Join(filepath.Dir(e.path), "themes")
+}
+
+func (e *Engine) SetupThemesDir() error {
+	globalThemesDir := e.GetThemesDir()
+	if err := os.MkdirAll(globalThemesDir, 0755); err != nil {
+		return err
+	}
+
+	// Tenta copiar os temas da pasta local ./themes se estivermos rodando no diretório do projeto
+	localThemesDir := "./themes"
+	files, err := os.ReadDir(localThemesDir)
+	if err != nil {
+		// Se não achar a pasta local, apenas ignora (pode estar rodando de outro lugar já instalado)
+		return nil
+	}
+
+	for _, f := range files {
+		if !f.IsDir() && filepath.Ext(f.Name()) == ".json" {
+			srcPath := filepath.Join(localThemesDir, f.Name())
+			destPath := filepath.Join(globalThemesDir, f.Name())
+			
+			// Só copia se o arquivo não existir no destino
+			if _, err := os.Stat(destPath); os.IsNotExist(err) {
+				data, err := os.ReadFile(srcPath)
+				if err == nil {
+					os.WriteFile(destPath, data, 0644)
+				}
+			}
+		}
+	}
+	return nil
 }
 
 func (e *Engine) LoadConfig() error {
@@ -253,6 +299,45 @@ func (e *Engine) SetProviderStatus(name string, enabled bool) error {
 	return fmt.Errorf("provedor %s não encontrado", name)
 }
 
+func (e *Engine) SetActiveProject(path string) error {
 
+	e.mu.Lock()
+	e.cfg.ActiveProject = path
+	e.mu.Unlock()
+	return e.SaveConfig()
+}
 
+func (e *Engine) GetProjects() []ProjectEntry {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	return e.cfg.Projects
+}
 
+func (e *Engine) AddProject(name, path string) error {
+	e.mu.Lock()
+	// Evitar duplicatas
+	for i, p := range e.cfg.Projects {
+		if p.Path == path {
+			e.cfg.Projects[i].Name = name
+			e.mu.Unlock()
+			return e.SaveConfig()
+		}
+	}
+	e.cfg.Projects = append(e.cfg.Projects, ProjectEntry{Name: name, Path: path})
+	e.mu.Unlock()
+	return e.SaveConfig()
+}
+
+func (e *Engine) RemoveProject(path string) error {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	newProjects := []ProjectEntry{}
+	for _, p := range e.cfg.Projects {
+		if p.Path != path {
+			newProjects = append(newProjects, p)
+		}
+	}
+	e.cfg.Projects = newProjects
+	return e.SaveConfig()
+}

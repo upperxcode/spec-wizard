@@ -31,11 +31,15 @@ const SpecTemplate = `# SPEC Técnica - {{.ProjectName}}
 
 func SaveMarkdown(path string, tmplStr string, data interface{}) error {
 	tmpl, err := template.New("doc").Parse(tmplStr)
-	if err != nil { return err }
-	
+	if err != nil {
+		return err
+	}
+
 	f, err := os.Create(path)
-	if err != nil { return err }
+	if err != nil {
+		return err
+	}
 	defer f.Close()
-	
+
 	return tmpl.Execute(f, data)
 }

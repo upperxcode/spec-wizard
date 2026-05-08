@@ -14,24 +14,15 @@ import (
 	"spec-wizard/internal/orchestrator"
 	"spec-wizard/internal/patterns"
 	"spec-wizard/internal/registry"
-	"spec-wizard/internal/workspace"
+
 	"strings"
 	"time"
 )
-
-const ConfigPath = "/home/john/.spec-wizard"
-const ProjectsFile = "projects.json"
-
-type ProjectEntry struct {
-	Name string `json:"name"`
-	Path string `json:"path"`
-}
 
 type APIHandler struct {
 	Plugins     []*registry.ExpertPlugin
 	PatternRepo *patterns.PatternRepository
 	Engine      *config.Engine
-	Workspace   *workspace.Workspace
 }
 
 // GetLLMClient cria um cliente configurado baseado nas configurações globais ou do projeto
@@ -337,7 +328,7 @@ func (h *APIHandler) ExecuteTask(w http.ResponseWriter, r *http.Request) {
 	loop := orchestrator.NewFeedbackLoop(req.ProjectPath, state.Language, userLang, llmClient)
 
 	fmt.Printf("🔄 Iniciando execução da tarefa %v via Feedback Loop...\n", req.TaskID)
-	
+
 	// Timeout de 180s (3 minutos) para a execução completa (IA + Ferramentas + Verificação)
 	ctx, cancel := context.WithTimeout(r.Context(), 180*time.Second)
 	defer cancel()
@@ -466,7 +457,7 @@ func (h *APIHandler) InterpretProject(w http.ResponseWriter, r *http.Request) {
 
 	// Registra o projeto na lista global
 	projectName := filepath.Base(req.Path)
-	h.saveProjectEntry(projectName, req.Path)
+	h.Engine.AddProject(projectName, req.Path)
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(suggestion)
@@ -693,7 +684,7 @@ func (h *APIHandler) SaveProjectSpec(w http.ResponseWriter, r *http.Request) {
 	if projectName == "" {
 		projectName = filepath.Base(req.Path)
 	}
-	h.saveProjectEntry(projectName, req.Path)
+	h.Engine.AddProject(projectName, req.Path)
 
 	w.WriteHeader(http.StatusOK)
 	w.Write([]byte("Documentação .spec-wizard/ atualizada com sucesso!"))
@@ -701,18 +692,14 @@ func (h *APIHandler) SaveProjectSpec(w http.ResponseWriter, r *http.Request) {
 
 // GET /api/projects - Lista todos os projetos salvos (Global)
 func (h *APIHandler) ListProjects(w http.ResponseWriter, r *http.Request) {
-	projects, err := h.loadProjects()
-	if err != nil {
-		json.NewEncoder(w).Encode([]ProjectEntry{})
-		return
-	}
+	projects := h.Engine.GetProjects()
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(projects)
 }
 
-// POST /api/workspace/projects - Adiciona um projeto à lista
+// POST /api/projects - Adiciona um projeto à lista
 func (h *APIHandler) AddProject(w http.ResponseWriter, r *http.Request) {
-	var entry workspace.ProjectEntry
+	var entry config.ProjectEntry
 	if err := json.NewDecoder(r.Body).Decode(&entry); err != nil {
 		sendJSONError(w, "Payload inválido", http.StatusBadRequest)
 		return
@@ -723,7 +710,7 @@ func (h *APIHandler) AddProject(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := h.Workspace.AddProject(entry.Name, entry.Path); err != nil {
+	if err := h.Engine.AddProject(entry.Name, entry.Path); err != nil {
 		sendJSONError(w, err.Error(), http.StatusBadRequest)
 		return
 	}
@@ -732,7 +719,7 @@ func (h *APIHandler) AddProject(w http.ResponseWriter, r *http.Request) {
 	w.Write([]byte("Projeto adicionado com sucesso!"))
 }
 
-// DELETE /api/workspace/projects - Remove um projeto da lista
+// DELETE /api/projects - Remove um projeto da lista
 func (h *APIHandler) RemoveProject(w http.ResponseWriter, r *http.Request) {
 	path := r.URL.Query().Get("path")
 	if path == "" {
@@ -740,47 +727,13 @@ func (h *APIHandler) RemoveProject(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := h.Workspace.RemoveProject(path); err != nil {
+	if err := h.Engine.RemoveProject(path); err != nil {
 		sendJSONError(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 
 	w.WriteHeader(http.StatusOK)
 	w.Write([]byte("Projeto removido com sucesso!"))
-}
-
-func (h *APIHandler) loadProjects() ([]ProjectEntry, error) {
-	fullPath := filepath.Join(ConfigPath, ProjectsFile)
-	data, err := os.ReadFile(fullPath)
-	if err != nil {
-		return nil, err
-	}
-
-	var projects []ProjectEntry
-	if err := json.Unmarshal(data, &projects); err != nil {
-		return nil, err
-	}
-	return projects, nil
-}
-
-func (h *APIHandler) saveProjectEntry(name, path string) error {
-	projects, _ := h.loadProjects()
-
-	// Evitar duplicados
-	for _, p := range projects {
-		if p.Path == path {
-			return nil
-		}
-	}
-
-	projects = append(projects, ProjectEntry{Name: name, Path: path})
-
-	if _, err := os.Stat(ConfigPath); os.IsNotExist(err) {
-		os.MkdirAll(ConfigPath, 0755)
-	}
-
-	data, _ := json.MarshalIndent(projects, "", "  ")
-	return os.WriteFile(filepath.Join(ConfigPath, ProjectsFile), data, 0644)
 }
 
 // GET /api/project/harness-prompt?path={path}&question={question}

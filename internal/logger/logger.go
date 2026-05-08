@@ -63,6 +63,12 @@ func Debug(msg string, args ...any) {
 	}
 }
 
+func Warn(msg string, args ...any) {
+	if DefaultLogger != nil {
+		DefaultLogger.Warn(msg, args...)
+	}
+}
+
 // LogTask é um helper para logar eventos de tarefas com contexto rico
 func LogTask(taskID, msg string, args ...any) {
 	if DefaultLogger != nil {

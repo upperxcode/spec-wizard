@@ -12,15 +12,15 @@ func (o *Orchestrator) generateFileTree(excludePatterns []string) string {
 	var sb strings.Builder
 	absPath, _ := filepath.Abs(o.ProjectPath)
 	sb.WriteString(fmt.Sprintf("PROJECT ROOT: %s\n", filepath.Base(absPath)))
-	
+
 	count := 0
 	// Inicia a caminhada na raiz do projeto com profundidade 0
 	o.walkDir(o.ProjectPath, "", 0, &sb, excludePatterns, &count)
-	
+
 	if count >= 1000 {
 		sb.WriteString("\n... (lista de arquivos truncada por tamanho excessivo)\n")
 	}
-	
+
 	return sb.String()
 }
 
@@ -54,7 +54,7 @@ func (o *Orchestrator) walkDir(path, indent string, depth int, sb *strings.Build
 		if name == "node_modules" || name == "vendor" || name == "build" ||
 			name == "bin" || name == "obj" || name == "ios" || name == "android" ||
 			name == "dist" || name == ".next" || name == "target" || name == "venv" ||
-			name == ".venv" || name == "__pycache__" || name == "coverage" || 
+			name == ".venv" || name == "__pycache__" || name == "coverage" ||
 			name == "out" || name == ".terraform" || name == ".git" {
 			continue
 		}

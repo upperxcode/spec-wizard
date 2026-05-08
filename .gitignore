@@ -1,27 +1,37 @@
-# Ignorar arquivos de sistema
+# Sistema e IDEs
 .DS_Store
 Thumbs.db
-
-# Ignorar pastas
-node_modules/
-dist/
-
-# Ignorar arquivos de configuração sensíveis
-.env
-
-
-
-.spec-wizard/
-.continue/
 .zed/
-demo-app/
+.vscode/
+.idea/
 
-*.log
+# Dependências
+node_modules/
+vendor/
 
+# Compilados e Binários
 server
 server-wizard
 wizard-server
-main
-run-integration.sh
 spec-wizard
+main
+dist/
+*.exe
+*.test
+*.prof
 
+# Configurações Locais e Sensíveis
+.env
+.spec-wizard/
+.continue/
+demo-app/
+
+# Logs e Temporários
+logs/*
+!logs/.gitkeep
+*.log
+tmp/
+
+# Scripts de Teste Locais
+run-integration.sh
+test_integration.sh

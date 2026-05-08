@@ -1,8 +1,8 @@
 package registry
 
 import (
-	"os"
 	"gopkg.in/yaml.v3" // Você precisará instalar: go get gopkg.in/yaml.v3
+	"os"
 )
 
 type Config struct {

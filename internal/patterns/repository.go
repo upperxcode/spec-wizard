@@ -77,12 +77,12 @@ func (r *PatternRepository) setupDefaults() {
 		{ID: "getx", Name: "GetX", Category: "StateManagement", Scope: "mobile"},
 		{ID: "mobx", Name: "MobX", Category: "StateManagement", Scope: "mobile"},
 		{ID: "signals", Name: "Signals", Category: "StateManagement", Scope: "mobile"},
-		
+
 		// Web Specific
 		{ID: "redux", Name: "Redux", Category: "StateManagement", Scope: "web"},
 		{ID: "context_api", Name: "Context API", Category: "StateManagement", Scope: "web"},
 		{ID: "vuex", Name: "Vuex / Pinia", Category: "StateManagement", Scope: "web"},
-		
+
 		// Generic
 		{ID: "none", Name: "None / Custom", Category: "StateManagement"},
 	}
@@ -98,10 +98,10 @@ func (r *PatternRepository) setupDefaults() {
 	allPatterns := [][]Pattern{architectures, philosophies, designPatterns, dataPatterns, stateManagements, dataStrategies}
 
 	supportedLangs := []string{"flutter", "dart", "go", "python", "javascript", "typescript"}
-	
+
 	for _, lang := range supportedLangs {
 		var langPatterns []Pattern
-		
+
 		// Determina o tipo de linguagem
 		isMobile := lang == "flutter" || lang == "dart"
 		isWeb := lang == "javascript" || lang == "typescript"
@@ -128,7 +128,7 @@ func (r *PatternRepository) setupDefaults() {
 func (r *PatternRepository) GetMultiplePatternRules(lang string, patternIDs []string) map[string][]string {
 	result := make(map[string][]string)
 	langPatterns := r.Store[strings.ToLower(lang)]
-	
+
 	for _, id := range patternIDs {
 		for _, p := range langPatterns {
 			if p.ID == id {

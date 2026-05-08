@@ -129,11 +129,13 @@ func (c *LLMClient) Ask(prompt string) (string, error) {
 	return c.AskWithContext(ctx, prompt, session)
 }
 
-func (c *LLMClient) AskWithContext(ctx context.Context, prompt string, session *analytic.Session) (string, error) {
+func (c *LLMClient) AskWithContext(ctx context.Context, prompt string, session *analytic.Session, history ...Message) (string, error) {
 	messages := []Message{}
 	if c.SystemPrompt != "" {
 		messages = append(messages, Message{Role: "system", Content: c.SystemPrompt})
 	}
+	// Inclui o histórico se fornecido
+	messages = append(messages, history...)
 	messages = append(messages, Message{Role: "user", Content: prompt})
 
 	var tools []Tool
@@ -177,9 +179,14 @@ func (c *LLMClient) AskWithContext(ctx context.Context, prompt string, session *
 
 		if len(resp.ToolCalls) == 0 {
 			if resp.Content == "" {
-				if i < 2 { // Tenta até 2 vezes um "nudge" se vier vazio
+				if i < 4 { // Tenta até 4 vezes um "nudge" se vier vazio
+					nudgeMsg := "Please provide your analysis or the requested JSON output."
+					// Se a última mensagem foi de ferramenta, ser mais específico
+					if len(messages) > 0 && messages[len(messages)-1].Role == "tool" {
+						nudgeMsg = "Thank you for the data. Now, please finalize your analysis and provide the JSON output."
+					}
 					logger.Info("⚠️ IA retornou resposta vazia. Tentando 'nudge'...", "iteration", i)
-					messages = append(messages, Message{Role: "user", Content: "Please provide your analysis or the requested JSON output."})
+					messages = append(messages, Message{Role: "user", Content: nudgeMsg})
 					continue
 				}
 				return "", ErrEmptyResponse
@@ -191,8 +198,18 @@ func (c *LLMClient) AskWithContext(ctx context.Context, prompt string, session *
 		for _, toolCall := range resp.ToolCalls {
 			var args map[string]any
 			if err := json.Unmarshal([]byte(toolCall.Function.Arguments), &args); err != nil {
-				return "", fmt.Errorf("error decoding tool arguments: %v", err)
+				// Se o JSON dos argumentos for inválido, enviamos o erro de volta para a IA tentar novamente
+				logger.Warn("⚠️ IA enviou argumentos JSON inválidos", "error", err, "raw", toolCall.Function.Arguments)
+				messages = append(messages, Message{
+					Role:       "tool",
+					Content:    fmt.Sprintf("Error decoding tool arguments: %v. Please ensure you send a valid JSON object.", err),
+					ToolCallID: toolCall.ID,
+				})
+				continue
 			}
+
+			// Normaliza argumentos para ajudar modelos menores
+			args = normalizeToolArgs(args)
 
 			logger.Info("🔧 Executando ferramenta", "name", toolCall.Function.Name, "args", args)
 			if c.OnProgress != nil {
@@ -204,7 +221,9 @@ func (c *LLMClient) AskWithContext(ctx context.Context, prompt string, session *
 			analytic.RecordTool(session, toolCall.Function.Name, startTool, args, err)
 
 			if err != nil {
-				output = fmt.Sprintf("Error executing tool: %v", err)
+				// Erro amigável para ajudar a IA a se recuperar
+				output = fmt.Sprintf("Error executing tool '%s': %v. Please check the parameters and try again.", toolCall.Function.Name, err)
+				logger.Warn("❌ Erro na execução da ferramenta", "tool", toolCall.Function.Name, "error", err)
 			}
 
 			messages = append(messages, Message{
@@ -215,7 +234,27 @@ func (c *LLMClient) AskWithContext(ctx context.Context, prompt string, session *
 		}
 	}
 
-	return "", fmt.Errorf("tool iteration limit exceeded")
+	return "", fmt.Errorf("tool iteration limit exceeded after 10 turns")
+}
+
+func normalizeToolArgs(args map[string]any) map[string]any {
+	// Mapeamentos comuns de modelos que alucinam nomes de parâmetros
+	aliases := map[string][]string{
+		"path":    {"directory", "dir", "file", "filename", "filepath", "command", "target", "folder"},
+		"content": {"data", "text", "body", "code", "payload"},
+	}
+
+	for target, sourceList := range aliases {
+		if _, exists := args[target]; !exists {
+			for _, source := range sourceList {
+				if val, ok := args[source]; ok {
+					args[target] = val
+					break
+				}
+			}
+		}
+	}
+	return args
 }
 
 // TranslateToEnglish translates the given text to English using the LLM.

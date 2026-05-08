@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"syscall"
 	"time"
 )
@@ -58,17 +59,18 @@ func (m *PluginManager) EnsureExpertRunning(plugin *ExpertPlugin) error {
 
 	// Atualiza o endpoint dinamicamente
 	plugin.Endpoint = fmt.Sprintf("http://localhost:%d", port)
-	
+
 	fmt.Printf("🚀 [Lifecycle] Alocando Expert %s na porta %d...\n", plugin.ID, port)
 
 	// Injeta a porta no comando de inicialização
 	startCmd := fmt.Sprintf("%s %d", plugin.StartCommand, port)
-	
+
 	cmd := exec.Command("bash", "-c", startCmd)
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 
-	logPath := fmt.Sprintf("expert_%s.log", plugin.ID)
+	logPath := filepath.Join("logs", fmt.Sprintf("expert_%s.log", plugin.ID))
 	logFile, _ := os.OpenFile(logPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+
 	cmd.Stdout = logFile
 	cmd.Stderr = logFile
 
@@ -97,7 +99,7 @@ func (m *PluginManager) EnsureExpertRunning(plugin *ExpertPlugin) error {
 func (m *PluginManager) StopCurrent() {
 	if m.CurrentCmd != nil && m.CurrentCmd.Process != nil {
 		fmt.Printf("🛑 [Lifecycle] Encerrando Expert: %s (PID: %d)\n", m.CurrentPlugin.ID, m.CurrentCmd.Process.Pid)
-		
+
 		// Mata o grupo de processos inteiro (bash + python/filhos)
 		pgid, err := syscall.Getpgid(m.CurrentCmd.Process.Pid)
 		if err == nil {
@@ -105,7 +107,7 @@ func (m *PluginManager) StopCurrent() {
 		} else {
 			m.CurrentCmd.Process.Kill()
 		}
-		
+
 		m.CurrentCmd.Wait()
 		m.CurrentCmd = nil
 		m.CurrentPlugin = nil

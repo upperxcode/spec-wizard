@@ -40,7 +40,7 @@ func TestRegistry_PathValidation(t *testing.T) {
 
 func TestRegistry_Execute(t *testing.T) {
 	reg := NewRegistry(".")
-	
+
 	reg.Register("hello", "Diz olá", `{}`, func(ctx context.Context, args map[string]any) (string, error) {
 		name, _ := args["name"].(string)
 		if name == "" {
@@ -50,7 +50,7 @@ func TestRegistry_Execute(t *testing.T) {
 	})
 
 	ctx := context.Background()
-	
+
 	t.Run("Execução simples", func(t *testing.T) {
 		res, err := reg.Execute(ctx, "hello", map[string]any{"name": "Ada"})
 		if err != nil {

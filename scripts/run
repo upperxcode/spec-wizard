@@ -67,18 +67,19 @@ function run_all() {
     
     echo -e "${GREEN}🚀 Servidor Go (Porta 8080)...${NC}"
     cd "$GO_SERVER_DIR" || exit
-    go run cmd/main.go --path "$PROJECT_ROOT" > "$PROJECT_ROOT/server.log" 2>&1 &
+    go run cmd/main.go --path "$PROJECT_ROOT" > "$PROJECT_ROOT/logs/server.log" 2>&1 &
     SERVER_PID=$!
     
     echo -e "${GREEN}🎨 Dashboard React (Porta 5173)...${NC}"
     cd "$UI_DIR" || exit
-    npm run dev > "$PROJECT_ROOT/ui.log" 2>&1 &
+    npm run dev > "$PROJECT_ROOT/logs/ui.log" 2>&1 &
     UI_PID=$!
     
     echo -e "-----------------------------------"
     echo -e "✅ ${GREEN}Sistema em execução!${NC}"
-    echo -e "- Backend: http://localhost:8080 (Log: server.log)"
-    echo -e "- Frontend: http://localhost:5173 (Log: ui.log)"
+    echo -e "- Backend: http://localhost:8080 (Log: logs/server.log)"
+    echo -e "- Frontend: http://localhost:5173 (Log: logs/ui.log)"
+
     echo "-----------------------------------"
     echo -e "${YELLOW}Pressione Ctrl+C para encerrar ambos os servidores...${NC}"
     

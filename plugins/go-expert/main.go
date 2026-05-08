@@ -26,12 +26,12 @@ func main() {
 	})
 	http.HandleFunc("/AnalyzeCodebase", handleAnalyze)
 	http.HandleFunc("/Format", handleFormat)
-	
+
 	port := "8083"
 	if len(os.Args) > 1 {
 		port = os.Args[1]
 	}
-	
+
 	fmt.Printf("🚀 Go Expert ativo na porta %s\n", port)
 	http.ListenAndServe(":"+port, nil)
 }
@@ -61,14 +61,14 @@ func handleFormat(w http.ResponseWriter, r *http.Request) {
 	cmd := exec.Command("ucf")
 	cmd.Stdin = strings.NewReader(req.Code)
 	output, err := cmd.CombinedOutput()
-	
+
 	// Fallback para gofmt se ucf falhar ou não estiver instalado
 	if err != nil {
 		cmd = exec.Command("gofmt")
 		cmd.Stdin = strings.NewReader(req.Code)
 		output, err = cmd.CombinedOutput()
 	}
-	
+
 	resp := FormatResponse{
 		FormattedCode: string(output),
 	}

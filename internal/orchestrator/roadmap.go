@@ -5,9 +5,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"spec-wizard/internal/prompt"
-	"spec-wizard/internal/logger"
 	"spec-wizard/internal/llm"
+	"spec-wizard/internal/logger"
+	"spec-wizard/internal/prompt"
 
 	"path/filepath"
 	"strings"
@@ -16,33 +16,30 @@ import (
 
 // CleanJSONResponse extrai o conteúdo JSON de dentro de blocos de código Markdown, se presentes
 func CleanJSONResponse(input string) string {
-	// 1. Remove blocos de pensamento <thought>...</thought> se existirem
-	clean := input
-	for {
-		startThought := strings.Index(clean, "<thought>")
-		endThought := strings.Index(clean, "</thought>")
-		if startThought != -1 && endThought != -1 && endThought > startThought {
-			clean = clean[:startThought] + clean[endThought+10:]
-			continue
-		}
-		break
+	// 1. Tenta encontrar o bloco {...} mais provável usando o primeiro { e o último }
+	start := strings.Index(input, "{")
+	end := strings.LastIndex(input, "}")
+
+	if start != -1 && end != -1 && end > start {
+		candidate := input[start : end+1]
+		// Remove marcações markdown que possam ter ficado dentro (ex: ```json { ... } ```)
+		candidate = strings.ReplaceAll(candidate, "```json", "")
+		candidate = strings.ReplaceAll(candidate, "```", "")
+		return strings.TrimSpace(candidate)
 	}
 
-	clean = strings.TrimSpace(clean)
-
-	// 2. Busca blocos de código Markdown
+	// 2. Fallback: Limpeza básica de markdown
+	clean := input
 	if idx := strings.Index(clean, "```json"); idx != -1 {
 		clean = clean[idx+7:]
 	} else if idx := strings.Index(clean, "```"); idx != -1 {
 		clean = clean[idx+3:]
 	}
 
-	// 3. Remove o fechamento do bloco de código
 	if idx := strings.LastIndex(clean, "```"); idx != -1 {
 		clean = clean[:idx]
 	}
 
-	// 4. Limpeza final de caracteres invisíveis
 	return strings.TrimSpace(clean)
 }
 
@@ -243,8 +240,8 @@ func (o *Orchestrator) getCriticalContext() string {
 			sb.WriteString(fmt.Sprintf("FILE: %s (Root Evidence)\nCONTENT:\n", rf))
 			// Pega apenas os primeiros 1000 bytes para prova de identidade
 			content := string(data)
-			if len(content) > 1000 {
-				content = content[:1000] + "... [TRUNCATED]"
+			if len(content) > 6000 {
+				content = content[:6000] + "\n... [TRUNCATED]"
 			}
 			sb.WriteString(content)
 			sb.WriteString("\n---\n")
@@ -295,6 +292,7 @@ type AuditResult struct {
 	FoundFiles   []string `json:"found_files"`
 	Reasoning    string   `json:"reasoning"`
 	MissingLogic []string `json:"missing_logic"`
+	Feedback     string   `json:"feedback"`
 }
 
 // AuditTask verifica se uma tarefa específica já foi implementada no código
@@ -369,22 +367,52 @@ func (o *Orchestrator) AuditTask(ctx context.Context, sprintID, taskID FlexibleI
 
 	rawResponse, err := llmClient.AskWithContext(ctx, auditPrompt, nil)
 	if err != nil {
+		reasoning := fmt.Sprintf("Erro de processamento: %v", err)
 		if err == llm.ErrEmptyResponse {
-			return nil, fmt.Errorf("a IA retornou uma resposta vazia. Isso pode acontecer se o modelo estiver instável ou se o contexto for muito grande. Tente simplificar a tarefa ou mudar o modelo.")
+			reasoning = "O modelo de IA retornou uma resposta vazia. Isso geralmente ocorre por saturação de contexto ou instabilidade do provedor."
 		}
-		return nil, err
+
+		logger.Warn("⚠️ Falha na consulta inicial da auditoria. Retornando fallback.", "error", err)
+		return &AuditResult{
+			Status:     "pending",
+			Confidence: 0,
+			Reasoning:  reasoning,
+			Feedback:   "A auditoria automática não conseguiu obter uma resposta válida. Tente simplificar a tarefa ou mudar o modelo nas configurações.",
+		}, nil
 	}
 
 	logger.Info("✅ Resposta da IA recebida para auditoria", "length", len(rawResponse))
 
 	cleanedJSON := CleanJSONResponse(rawResponse)
-	if cleanedJSON == "" {
-		return nil, fmt.Errorf("a resposta da IA não contém um JSON válido ou está vazia")
-	}
 	var result AuditResult
 	if err := json.Unmarshal([]byte(cleanedJSON), &result); err != nil {
-		logger.Error("❌ Erro ao decodificar JSON da auditoria", err, "raw", rawResponse, "cleaned", cleanedJSON)
-		return nil, fmt.Errorf("erro ao processar resposta da auditoria: %v | Resposta Bruta capturada no log", err)
+		logger.Info("⚠️ Falha ao decodificar JSON da auditoria. Tentando correção automática...", "error", err)
+		correctionMsg := fmt.Sprintf("Your previous response was not a valid JSON. Error: %v. Please provide ONLY the raw JSON object for the audit, without any additional text, reasoning or markdown blocks. Ensure all fields are present: status, confidence, found_files, reasoning, missing_logic.", err)
+
+		// Faz uma segunda tentativa com o erro como feedback para a IA
+		// Montamos o histórico correto: [Prompt Original] -> [Resposta Errada] -> [Pedido de Correção]
+		history := []llm.Message{
+			{Role: "user", Content: auditPrompt},
+			{Role: "assistant", Content: rawResponse},
+		}
+
+		rawResponse, err = llmClient.AskWithContext(ctx, correctionMsg, nil, history...)
+
+		if err == nil {
+			cleanedJSON = CleanJSONResponse(rawResponse)
+			err = json.Unmarshal([]byte(cleanedJSON), &result)
+		}
+
+		if err != nil {
+			logger.Warn("❌ Falha na auditoria após autocorreção. Retornando estado de fallback.", "error", err)
+			return &AuditResult{
+				Status:     "pending",
+				Confidence: 0,
+				Reasoning:  fmt.Sprintf("Incapacidade técnica do modelo atual: %v", err),
+				Feedback:   "A auditoria automática falhou em processar a resposta deste modelo. Você pode tentar novamente com um modelo diferente ou marcar a tarefa como concluída manualmente.",
+			}, nil
+		}
+		logger.Info("✅ JSON corrigido com sucesso após tentativa de autocorreção")
 	}
 
 	// 5. Se a IA confirmou que está "completed" e a confiança é alta, atualiza o status
@@ -435,7 +463,7 @@ func (o *Orchestrator) SaveRoadmapToMarkdown(roadmap *ProjectRoadmap) error {
 
 	wizardDir := filepath.Join(o.ProjectPath, ".spec-wizard")
 	os.WriteFile(filepath.Join(wizardDir, "roadmap.md"), []byte(sb.String()), 0644)
-	
+
 	// Também salva na raiz do projeto para visibilidade imediata do usuário
 	return os.WriteFile(filepath.Join(o.ProjectPath, "roadmap.md"), []byte(sb.String()), 0644)
 }
@@ -493,4 +521,3 @@ func (o *Orchestrator) PreviewRoadmapPrompt(config ProjectConfig) string {
 
 	return fmt.Sprintf("--- PHASE 1: MODULE MAPPING PROMPT ---\n%s\n\n--- PHASE 2: STRATEGIC ROADMAP PROMPT ---\n%s", mappingPrompt, roadmapPrompt)
 }
-

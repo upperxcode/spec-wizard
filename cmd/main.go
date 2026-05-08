@@ -15,19 +15,21 @@ import (
 	"spec-wizard/internal/registry"
 	"spec-wizard/internal/theme"
 	"spec-wizard/internal/tui"
-	"spec-wizard/internal/workspace"
+
 	"syscall"
 )
 
 func main() {
 	// 1. Inicializa Logs Estruturados
-	logFile := "server.log"
+	// 1. Inicializa Logs Estruturados
+	logFile := filepath.Join("logs", "server.log")
 	for _, arg := range os.Args {
 		if arg == "--tui" {
-			logFile = "tui.log"
+			logFile = filepath.Join("logs", "tui.log")
 			break
 		}
 	}
+
 	logger.Init(logFile)
 	logger.Info("🧙‍♂️ Sistema Iniciado", "mode", logFile)
 
@@ -37,23 +39,24 @@ func main() {
 		fmt.Printf("⚠️ Erro ao carregar experts: %v\n", err)
 	}
 
-	// 1.5. Configuração Global (Engine)
-	configPath := os.Getenv("HOME") + "/.spec-wizard/llm_config.json"
-	if _, err := os.Stat(".spec-wizard/llm_config.json"); err == nil {
-		configPath = ".spec-wizard/llm_config.json"
+	// 1.5. Configuração Global do Aplicativo (LLM, Temas, Projetos)
+	homeDir, _ := os.UserHomeDir()
+	appConfigDir := filepath.Join(homeDir, ".spec-wizard")
+	globalConfigPath := filepath.Join(appConfigDir, "config.json")
+
+	fmt.Printf("📂 Usando configuração global: %s\n", globalConfigPath)
+	engine, err := config.NewEngine(globalConfigPath)
+	if err != nil {
+		logger.Error("❌ Falha ao carregar configuração global", err)
+		os.Exit(1)
 	}
 
-	fmt.Printf("📂 Usando configuração: %s\n", configPath)
-	engine, _ := config.NewEngine(configPath)
-
 	patternRepo := patterns.NewRepository()
-	ws := workspace.NewWorkspace(os.Getenv("HOME") + "/.spec-wizard")
 
 	handler := &api.APIHandler{
 		Plugins:     plugins,
 		Engine:      engine,
 		PatternRepo: patternRepo,
-		Workspace:   ws,
 	}
 
 	// Verificar se modo TUI está ativo
@@ -66,6 +69,13 @@ func main() {
 		if arg == "--path" && i+1 < len(os.Args) {
 			projectPath = os.Args[i+1]
 		}
+	}
+
+	// Se um path foi passado, garante que ele está registrado e ativo na config global
+	if projectPath != "." {
+		absPath, _ := filepath.Abs(projectPath)
+		engine.AddProject(filepath.Base(absPath), absPath)
+		engine.SetActiveProject(absPath)
 	}
 
 	if useTUI {

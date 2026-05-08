@@ -52,7 +52,7 @@ func (n *CentralNormalizer) normalizeFile(inputPath, outputPath string) error {
 
 func (n *CentralNormalizer) normalizeLink(url, outputPath string) error {
 	fmt.Printf("🌐 [Normalizer] Baixando conteúdo de: %s\n", url)
-	
+
 	resp, err := http.Get(url)
 	if err != nil {
 		return err
@@ -109,32 +109,34 @@ func (n *CentralNormalizer) processCSV(inputPath, outputPath string) error {
 	if err != nil {
 		return err
 	}
-	
+
 	// Simples conversão de CSV para tabela MD
 	lines := strings.Split(string(data), "\n")
 	var sb strings.Builder
 	sb.WriteString(fmt.Sprintf("# Data Source: %s\n\n", filepath.Base(inputPath)))
-	
+
 	for _, line := range lines {
-		if strings.TrimSpace(line) == "" { continue }
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
 		cols := strings.Split(line, ",")
 		sb.WriteString("| " + strings.Join(cols, " | ") + " |\n")
 	}
-	
+
 	return os.WriteFile(outputPath, []byte(sb.String()), 0644)
 }
 
 func (n *CentralNormalizer) processGenericFile(inputPath, outputPath string, typeLabel string) error {
 	// Fallback para arquivos que não temos parser nativo robusto ainda
-	// Poderíamos usar o LLM para extrair o texto se for pequeno, 
+	// Poderíamos usar o LLM para extrair o texto se for pequeno,
 	// ou apenas ler o conteúdo bruto se for texto.
 	data, err := os.ReadFile(inputPath)
 	if err != nil {
 		return err
 	}
 
-	content := fmt.Sprintf("# [%s Source] %s\n\nProcessed at: %s\n\n%s", 
+	content := fmt.Sprintf("# [%s Source] %s\n\nProcessed at: %s\n\n%s",
 		typeLabel, filepath.Base(inputPath), time.Now().Format(time.RFC3339), string(data))
-	
+
 	return os.WriteFile(outputPath, []byte(content), 0644)
 }

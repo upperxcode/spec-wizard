@@ -100,18 +100,18 @@ type ProjectConfig struct {
 // Task representa uma unidade de trabalho dentro de uma sprint
 type Task struct {
 	ID                 FlexibleID `json:"id"`
-	Title              string   `json:"title"`
-	Priority           string   `json:"priority"` // "HIGH", "MEDIUM", "LOW"
-	Description        string   `json:"description"`
-	AcceptanceCriteria []string `json:"acceptance_criteria"`
-	Status             string   `json:"status"` // "pending", "in_progress", "completed", "failed"
+	Title              string     `json:"title"`
+	Priority           string     `json:"priority"` // "HIGH", "MEDIUM", "LOW"
+	Description        string     `json:"description"`
+	AcceptanceCriteria []string   `json:"acceptance_criteria"`
+	Status             string     `json:"status"` // "pending", "in_progress", "completed", "failed"
 }
 
 // Sprint agrupa tarefas com um objetivo comum
 type Sprint struct {
 	ID    FlexibleID `json:"id"`
-	Goal  string `json:"goal"`
-	Tasks []Task `json:"tasks"`
+	Goal  string     `json:"goal"`
+	Tasks []Task     `json:"tasks"`
 }
 
 // ProjectRoadmap é o plano mestre de execução

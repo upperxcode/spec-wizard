@@ -13,25 +13,25 @@ func NewPromptFactory() *PromptFactory {
 }
 
 type ExecutionContext struct {
-	Skills                 string
-	Spec                   string
-	Summary                string
-	Roadmap                string
-	PrdExcerpt             string
-	SprintID               string
-	SprintGoal             string
-	TaskTitle              string
-	TaskDescription        string
-	AcceptanceCriteria     []string
-	ReferenceFiles         []string
-	Architecture           string
-	FileTree               string
-	Dependencies           string
-	ApiContracts           string
-	UserQuestion           string
-	KnowledgeBase          string
-	Language               string
-	UserLanguage           string
+	Skills             string
+	Spec               string
+	Summary            string
+	Roadmap            string
+	PrdExcerpt         string
+	SprintID           string
+	SprintGoal         string
+	TaskTitle          string
+	TaskDescription    string
+	AcceptanceCriteria []string
+	ReferenceFiles     []string
+	Architecture       string
+	FileTree           string
+	Dependencies       string
+	ApiContracts       string
+	UserQuestion       string
+	KnowledgeBase      string
+	Language           string
+	UserLanguage       string
 }
 
 // GenerateExecutionPrompt cria o prompt definitivo para o Harness de Execução
@@ -130,16 +130,23 @@ The project is a %s application.
    - **"completed"**: Logic, UI, and necessary services are found and fully implemented according to criteria.
    - **"in_progress"**: Files exist but implementation is partial, empty, or missing critical logic.
    - **"pending"**: No relevant files or logic found.
-4. **OUTPUT FORMAT (RAW JSON ONLY)**:
+
+### !!! CRITICAL - OUTPUT RULES !!!
+- **MANDATORY**: Respond ONLY with a valid RAW JSON object.
+- **NO REASONING OUTSIDE JSON**: Do not include any "thought" blocks, comments, or explanations outside the JSON structure.
+- **NO PREAMBLE**: Do not say "Here is the audit result" or "According to the files...".
+- **STRICT JSON**: Ensure all strings are properly quoted and the JSON is perfectly valid.
+
+### OUTPUT SCHEMA (STRICT):
 {
   "status": "completed | in_progress | pending",
   "confidence": 0.0 to 1.0,
   "found_files": ["list of paths"],
-  "reasoning": "Brief explanation of why you chose this status",
+  "reasoning": "Brief technical explanation for this status",
   "missing_logic": ["What is still missing to call it completed"]
 }
 
-Generate the audit now:`,
+Generate the audit now (RAW JSON ONLY):`,
 		ctx.Language, ctx.TaskTitle, ctx.TaskDescription, criteria, ctx.Spec, ctx.FileTree, ctx.KnowledgeBase)
 }
 
@@ -349,7 +356,7 @@ Your goal is to REGENERATE a professional Roadmap that accurately reflects the c
   ]
 }
 
-Generate the audited roadmap now:`, 
+Generate the audited roadmap now:`,
 		ctx.Language, ctx.PRD, ctx.Spec, ctx.Skills, fileTree, ctx.ExistingRoadmap, moduleMapping, ctx.Language, strings.Join(ctx.Patterns, "|"))
 }
 
