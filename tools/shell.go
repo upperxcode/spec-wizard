@@ -33,7 +33,7 @@ func RegisterShellTools(r *Registry) {
 		}
 
 		// 2. Timeout de Segurança (evita travamentos com servidores ou processos infinitos)
-		timeoutCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+		timeoutCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
 		defer cancel()
 
 		var cmd *exec.Cmd
@@ -56,7 +56,7 @@ func RegisterShellTools(r *Registry) {
 
 		if err != nil {
 			if timeoutCtx.Err() == context.DeadlineExceeded {
-				return outStr, fmt.Errorf("tempo limite de 30s excedido. Comando foi interrompido.\nSaída parcial: %s", outStr)
+				return outStr, fmt.Errorf("tempo limite de 60s excedido. Comando foi interrompido.\nSaída parcial: %s", outStr)
 			}
 			return outStr, fmt.Errorf("erro na execução: %v\nSaída: %s", err, outStr)
 		}

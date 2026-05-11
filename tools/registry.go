@@ -28,9 +28,11 @@ type ToolFunc func(ctx context.Context, args map[string]any) (string, error)
 
 // Registry gerencia as ferramentas disponíveis no sistema
 type Registry struct {
-	mu    sync.RWMutex
-	tools map[string]toolEntry
-	root  string
+	mu           sync.RWMutex
+	tools        map[string]toolEntry
+	root         string
+	touchedFiles map[string]bool
+	muTouched    sync.Mutex
 }
 
 type toolEntry struct {
@@ -41,8 +43,9 @@ type toolEntry struct {
 // NewRegistry cria um novo registro de ferramentas
 func NewRegistry(root string) *Registry {
 	return &Registry{
-		tools: make(map[string]toolEntry),
-		root:  root,
+		tools:        make(map[string]toolEntry),
+		root:         root,
+		touchedFiles: make(map[string]bool),
 	}
 }
 
@@ -113,4 +116,27 @@ func (r *Registry) Execute(ctx context.Context, name string, args map[string]any
 	}
 
 	return entry.handler(ctx, args)
+}
+
+// RecordTouch registra que um arquivo foi alterado por uma ferramenta
+func (r *Registry) RecordTouch(file string) {
+	r.muTouched.Lock()
+	defer r.muTouched.Unlock()
+	if r.touchedFiles == nil {
+		r.touchedFiles = make(map[string]bool)
+	}
+	r.touchedFiles[file] = true
+}
+
+// GetTouchedFiles retorna a lista de arquivos alterados e limpa o rastreio
+func (r *Registry) GetTouchedFiles() []string {
+	r.muTouched.Lock()
+	defer r.muTouched.Unlock()
+
+	var files []string
+	for f := range r.touchedFiles {
+		files = append(files, f)
+	}
+	r.touchedFiles = make(map[string]bool) // Limpa para a próxima iteração
+	return files
 }

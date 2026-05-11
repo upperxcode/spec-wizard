@@ -7,18 +7,28 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sync"
 	"syscall"
 	"time"
 )
 
-// PluginManager gerencia o ciclo de vida dos processos MCP de linguagem
+// RunningExpert encapsula um expert em execução
+type RunningExpert struct {
+	Plugin *ExpertPlugin
+	Cmd    *exec.Cmd
+}
+
+// PluginManager gerencia o ciclo de vida dos processos MCP de linguagem e Experts de IA
 type PluginManager struct {
-	CurrentPlugin *ExpertPlugin
-	CurrentCmd    *exec.Cmd
+	Running      map[string]*RunningExpert
+	ResourcesDir string
+	mu           sync.RWMutex
 }
 
 // GlobalManager é uma instância única para gerenciar os plugins ativos
-var GlobalManager = &PluginManager{}
+var GlobalManager = &PluginManager{
+	Running: make(map[string]*RunningExpert),
+}
 
 // FindFreePort busca uma porta disponível em um range
 func (m *PluginManager) findFreePort(start, end int) (int, error) {
@@ -36,90 +46,150 @@ func (m *PluginManager) findFreePort(start, end int) (int, error) {
 	return 0, fmt.Errorf("nenhuma porta livre no range %d-%d", start, end)
 }
 
-// EnsureExpertRunning garante que o plugin correto está em execução e aloca porta dinâmica
+// EnsureExpertRunning garante que o plugin específico está em execução
 func (m *PluginManager) EnsureExpertRunning(plugin *ExpertPlugin) error {
-	// Se já estiver rodando o plugin certo e estiver saudável, não faz nada
-	if m.CurrentPlugin != nil && m.CurrentPlugin.ID == plugin.ID {
-		if m.isHealthy(m.CurrentPlugin.Endpoint) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	// 1. Verifica se já está rodando e saudável
+	if running, ok := m.Running[plugin.ID]; ok {
+		if m.isHealthy(plugin.ID, running.Plugin.Endpoint) {
 			return nil
 		}
-		m.StopCurrent()
+		// Se não estiver saudável, remove da lista e tenta reiniciar
+		m.stopExpertLocked(plugin.ID)
 	}
 
-	// Se houver outro, mata
-	if m.CurrentPlugin != nil {
-		m.StopCurrent()
-	}
-
-	// Aloca porta dinâmica (Range 8080-8100)
-	port, err := m.findFreePort(8080, 8100)
+	// 2. Aloca porta dinâmica (Range 8080-8200)
+	port, err := m.findFreePort(8080, 8200)
 	if err != nil {
 		return err
 	}
 
-	// Atualiza o endpoint dinamicamente
+	// 3. Configura o endpoint dinamicamente
 	plugin.Endpoint = fmt.Sprintf("http://localhost:%d", port)
-
 	fmt.Printf("🚀 [Lifecycle] Alocando Expert %s na porta %d...\n", plugin.ID, port)
 
-	// Injeta a porta no comando de inicialização
+	// 4. Inicia o processo
 	startCmd := fmt.Sprintf("%s %d", plugin.StartCommand, port)
-
 	cmd := exec.Command("bash", "-c", startCmd)
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 
-	logPath := filepath.Join("logs", fmt.Sprintf("expert_%s.log", plugin.ID))
+	if m.ResourcesDir != "" {
+		cmd.Dir = m.ResourcesDir
+	}
+
+	logPath := filepath.Join(m.ResourcesDir, "logs", fmt.Sprintf("expert_%s.log", plugin.ID))
+	if m.ResourcesDir == "" {
+		logPath = filepath.Join("logs", fmt.Sprintf("expert_%s.log", plugin.ID))
+		os.MkdirAll("logs", 0755)
+	}
 	logFile, _ := os.OpenFile(logPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
 
 	cmd.Stdout = logFile
 	cmd.Stderr = logFile
 
 	if err := cmd.Start(); err != nil {
-		return fmt.Errorf("falha ao iniciar expert: %v", err)
+		return fmt.Errorf("falha ao iniciar expert %s: %v", plugin.ID, err)
 	}
 
-	m.CurrentPlugin = plugin
-	m.CurrentCmd = cmd
+	m.Running[plugin.ID] = &RunningExpert{
+		Plugin: plugin,
+		Cmd:    cmd,
+	}
 
-	// Aguarda saúde
-	maxRetries := 15
+	// 5. Aguarda saúde
+	maxRetries := 20
+	fmt.Printf("⏳ [Lifecycle] Aguardando expert %s subir em %s...\n", plugin.ID, plugin.Endpoint)
 	for i := 0; i < maxRetries; i++ {
-		if m.isHealthy(plugin.Endpoint) {
+		if m.isHealthy(plugin.ID, plugin.Endpoint) {
 			fmt.Printf("✅ [Lifecycle] Expert %s ONLINE em %s\n", plugin.ID, plugin.Endpoint)
 			return nil
 		}
 		time.Sleep(1 * time.Second)
 	}
 
-	m.StopCurrent()
-	return fmt.Errorf("timeout: expert %s não subiu em %s", plugin.ID, plugin.Endpoint)
+	m.stopExpertLocked(plugin.ID)
+	return fmt.Errorf("timeout: expert %s não respondeu ao health check em %s após %d tentativas", plugin.ID, plugin.Endpoint, maxRetries)
 }
 
-// StopCurrent encerra o plugin que está rodando no momento
-func (m *PluginManager) StopCurrent() {
-	if m.CurrentCmd != nil && m.CurrentCmd.Process != nil {
-		fmt.Printf("🛑 [Lifecycle] Encerrando Expert: %s (PID: %d)\n", m.CurrentPlugin.ID, m.CurrentCmd.Process.Pid)
+// StopExpert encerra um expert específico
+func (m *PluginManager) StopExpert(id string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.stopExpertLocked(id)
+}
 
-		// Mata o grupo de processos inteiro (bash + python/filhos)
-		pgid, err := syscall.Getpgid(m.CurrentCmd.Process.Pid)
-		if err == nil {
-			syscall.Kill(-pgid, syscall.SIGKILL)
-		} else {
-			m.CurrentCmd.Process.Kill()
+func (m *PluginManager) stopExpertLocked(id string) {
+	if running, ok := m.Running[id]; ok {
+		if running.Cmd != nil && running.Cmd.Process != nil {
+			fmt.Printf("🛑 [Lifecycle] Encerrando Expert: %s (PID: %d)\n", id, running.Cmd.Process.Pid)
+			pgid, err := syscall.Getpgid(running.Cmd.Process.Pid)
+			if err == nil {
+				syscall.Kill(-pgid, syscall.SIGKILL)
+			} else {
+				running.Cmd.Process.Kill()
+			}
+			running.Cmd.Wait()
 		}
-
-		m.CurrentCmd.Wait()
-		m.CurrentCmd = nil
-		m.CurrentPlugin = nil
+		delete(m.Running, id)
 	}
 }
 
-func (m *PluginManager) isHealthy(endpoint string) bool {
-	client := http.Client{
-		Timeout: 500 * time.Millisecond,
+// StopAll encerra todos os plugins ativos
+func (m *PluginManager) StopAll() {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for id := range m.Running {
+		m.stopExpertLocked(id)
 	}
-	// Adicionado retry interno no health check para ser mais tolerante a picos
-	resp, err := client.Get(endpoint + "/health")
+}
+
+// StopCurrent mantido para compatibilidade se necessário, mas agora redireciona
+func (m *PluginManager) StopCurrent() {
+	m.StopAll()
+}
+
+// IsHealthy verifica se o expert está saudável
+func (m *PluginManager) IsHealthy(id string) bool {
+	m.mu.RLock()
+	running, ok := m.Running[id]
+	endpoint := ""
+	if ok && running.Plugin != nil {
+		endpoint = running.Plugin.Endpoint
+	}
+	m.mu.RUnlock()
+
+	if endpoint == "" {
+		return false
+	}
+
+	client := http.Client{
+		Timeout: 800 * time.Millisecond,
+	}
+	url := endpoint + "/health"
+	resp, err := client.Get(url)
+	if err != nil {
+		return false
+	}
+	defer resp.Body.Close()
+	return resp.StatusCode == http.StatusOK
+}
+
+// IsRunning verifica se o processo do expert existe
+func (m *PluginManager) IsRunning(id string) bool {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	running, ok := m.Running[id]
+	return ok && running.Cmd != nil && running.Cmd.Process != nil
+}
+
+func (m *PluginManager) isHealthy(id, endpoint string) bool {
+	client := http.Client{
+		Timeout: 800 * time.Millisecond,
+	}
+	url := endpoint + "/health"
+	resp, err := client.Get(url)
 	if err != nil {
 		return false
 	}

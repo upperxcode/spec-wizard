@@ -29,6 +29,7 @@ type Brain interface {
 	SetTheme(name string) error
 	DeleteProjectAnchor() error
 	RenameProject(newName string) error
+	GetThemesDir() string
 }
 
 func (o *Orchestrator) ProcessQuery(ctx context.Context, query string) (string, error) {
@@ -37,8 +38,11 @@ func (o *Orchestrator) ProcessQuery(ctx context.Context, query string) (string, 
 	defer session.Finalize("") // No final do método, o defer finaliza
 
 	// 1. Resolve o cliente LLM (usando Claw-code internamente)
-	providerName, modelName, _ := o.Engine.GetActiveModel()
-	provider := llm.NewProvider(providerName.Name, providerName.APIURL, providerName.APIKey, providerName.EnvAPIKey)
+	p, modelName, _ := o.Engine.GetActiveModel()
+	provider, err := llm.NewProvider(p.Name, p.APIURL, p.APIKey, p.EnvAPIKey, p.Sequential, p.UseCLI, o.Plugins)
+	if err != nil {
+		return "", err
+	}
 	client := llm.NewLLMClient(provider, modelName.Name, o.Tools)
 	client.OnProgress = o.onProgress
 
@@ -153,9 +157,13 @@ func (o *Orchestrator) GetStatus() BrainStatus {
 }
 
 func (o *Orchestrator) ListThemes() []string {
-	themes, _ := theme.ListThemes("./themes")
+	themes, _ := theme.ListThemes(o.GetThemesDir())
 	// Adiciona o tema padrão sempre
 	return append([]string{"dracula"}, themes...)
+}
+
+func (o *Orchestrator) GetThemesDir() string {
+	return o.Engine.GetThemesDir()
 }
 
 func (o *Orchestrator) SetTheme(name string) error {
@@ -164,7 +172,7 @@ func (o *Orchestrator) SetTheme(name string) error {
 	}
 
 	// Tenta carregar o arquivo
-	path := filepath.Join("./themes", name+".json")
+	path := filepath.Join(o.GetThemesDir(), name+".json")
 	_, err := theme.LoadTheme(path)
 	if err != nil {
 		return err

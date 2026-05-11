@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 )
 
@@ -22,7 +23,9 @@ type ProviderConfig struct {
 	APIKey    string        `json:"api_key"`
 	EnvAPIKey string        `json:"env_api_key"`
 	Enabled   bool          `json:"enabled"`
-	Models    []ModelConfig `json:"models"`
+	Models     []ModelConfig `json:"models"`
+	Sequential bool          `json:"sequential"`
+	UseCLI     bool          `json:"use_cli"`
 }
 
 type ActiveConfig struct {
@@ -41,22 +44,23 @@ type GlobalConfig struct {
 	Theme         string           `json:"theme"`
 	Projects      []ProjectEntry   `json:"projects"`
 	ActiveProject string           `json:"active_project"`
+	Port          string           `json:"port"`
 }
 
 type Engine struct {
-	mu   sync.RWMutex
-	cfg  GlobalConfig
-	path string
+	mu        sync.RWMutex
+	cfg       GlobalConfig
+	path      string
+	themesDir string
 }
 
-
-
-func NewEngine(configPath string) (*Engine, error) {
+func NewEngine(configPath string, themesDir string) (*Engine, error) {
 	e := &Engine{
-		path: configPath,
-		cfg:  GlobalConfig{Providers: []ProviderConfig{}},
+		path:      configPath,
+		themesDir: themesDir,
+		cfg:       GlobalConfig{Providers: []ProviderConfig{}},
 	}
-	
+
 	if err := e.LoadConfig(); err != nil {
 		if !os.IsNotExist(err) {
 			return nil, err
@@ -74,6 +78,9 @@ func NewEngine(configPath string) (*Engine, error) {
 }
 
 func (e *Engine) GetThemesDir() string {
+	if e.themesDir != "" {
+		return e.themesDir
+	}
 	return filepath.Join(filepath.Dir(e.path), "themes")
 }
 
@@ -95,7 +102,7 @@ func (e *Engine) SetupThemesDir() error {
 		if !f.IsDir() && filepath.Ext(f.Name()) == ".json" {
 			srcPath := filepath.Join(localThemesDir, f.Name())
 			destPath := filepath.Join(globalThemesDir, f.Name())
-			
+
 			// Só copia se o arquivo não existir no destino
 			if _, err := os.Stat(destPath); os.IsNotExist(err) {
 				data, err := os.ReadFile(srcPath)
@@ -122,13 +129,86 @@ func (e *Engine) ReloadConfig() error {
 	return e.LoadConfig()
 }
 
-
 func (e *Engine) SaveConfig() error {
 	dir := filepath.Dir(e.path)
 	if err := os.MkdirAll(dir, 0755); err != nil {
 		return err
 	}
-	
+
+	data, err := json.MarshalIndent(e.cfg, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(e.path, data, 0644)
+}
+
+// AddOrUpdateProvider adds a new LLM provider or updates an existing one
+func (e *Engine) AddOrUpdateProvider(p ProviderConfig) error {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	found := false
+	for i, existing := range e.cfg.Providers {
+		if existing.Name == p.Name {
+			// Update existing
+			e.cfg.Providers[i].APIURL = p.APIURL
+			e.cfg.Providers[i].APIKey = p.APIKey
+			e.cfg.Providers[i].EnvAPIKey = p.EnvAPIKey
+			e.cfg.Providers[i].Enabled = p.Enabled
+			e.cfg.Providers[i].Sequential = p.Sequential
+			found = true
+			break
+		}
+	}
+
+	if !found {
+		p.Enabled = true // Enable by default when adding
+		e.cfg.Providers = append(e.cfg.Providers, p)
+	}
+
+	return e.SaveConfig()
+}
+
+// AddModel adds a new model to an existing provider
+func (e *Engine) AddModel(providerName string, m ModelConfig) error {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	foundProvider := false
+	for i, p := range e.cfg.Providers {
+		if p.Name == providerName {
+			foundProvider = true
+
+			// Check if model already exists
+			modelExists := false
+			for j, existingModel := range p.Models {
+				if existingModel.Name == m.Name {
+					// Update existing
+					e.cfg.Providers[i].Models[j].Label = m.Label
+					e.cfg.Providers[i].Models[j].Context = m.Context
+					e.cfg.Providers[i].Models[j].Enabled = m.Enabled
+					modelExists = true
+					break
+				}
+			}
+
+			if !modelExists {
+				m.Enabled = true // Enable by default
+				e.cfg.Providers[i].Models = append(e.cfg.Providers[i].Models, m)
+			}
+			break
+		}
+	}
+
+	if !foundProvider {
+		return fmt.Errorf("provider %s not found", providerName)
+	}
+
+	dir := filepath.Dir(e.path)
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return err
+	}
+
 	data, err := json.MarshalIndent(e.cfg, "", "  ")
 	if err != nil {
 		return err
@@ -174,7 +254,6 @@ func (e *Engine) GetActiveModel() (ProviderConfig, ModelConfig, error) {
 	return ProviderConfig{}, ModelConfig{}, fmt.Errorf("nenhum modelo ativo ou habilitado encontrado na configuração global")
 }
 
-
 func (e *Engine) GetProviders() []ProviderConfig {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
@@ -200,22 +279,28 @@ func (e *Engine) PingProvider(name string) error {
 		}
 	}
 	e.mu.RUnlock()
-
+	nameLower := strings.ToLower(name)
 	if !found {
 		return fmt.Errorf("provedor %s não encontrado", name)
+	}
+
+	// Se for um provedor CLI, não exigimos APIURL para o ping
+	if provider.UseCLI {
+		// Opcional: verificar se o binário existe no PATH
+		return nil
 	}
 
 	if provider.APIURL == "" {
 		return fmt.Errorf("URL base não configurada para %s", name)
 	}
-	
+
 	// Tenta um ping básico (cada provedor pode ter um endpoint diferente, mas /models é comum)
 	url := provider.APIURL
-	if provider.Name == "ollama" {
+	if nameLower == "ollama" {
 		url = provider.APIURL + "/api/tags"
-	} else if provider.Name == "openai" || provider.Name == "openrouter" {
+	} else if nameLower == "openai" || nameLower == "openrouter" {
 		url = provider.APIURL + "/models"
-	} else if provider.Name == "gemini" {
+	} else if nameLower == "gemini" {
 		// O ping do Gemini funciona melhor com o endpoint de listagem de modelos
 		// e precisa da chave via query param ou header
 		url = "https://generativelanguage.googleapis.com/v1beta/models"
@@ -231,10 +316,10 @@ func (e *Engine) PingProvider(name string) error {
 		if provider.EnvAPIKey != "" {
 			apiKey = os.Getenv(provider.EnvAPIKey)
 		}
-		
+
 		// 2. Fallback to hardcoded defaults if still empty
 		if apiKey == "" {
-			switch provider.Name {
+			switch nameLower {
 			case "openai":
 				apiKey = os.Getenv("OPENAI_API_KEY")
 			case "anthropic":
@@ -248,7 +333,7 @@ func (e *Engine) PingProvider(name string) error {
 	}
 
 	req, _ := http.NewRequest("GET", url, nil)
-	if (provider.Name == "openai" || provider.Name == "openrouter") && apiKey != "" {
+	if (nameLower == "openai" || nameLower == "openrouter") && apiKey != "" {
 		req.Header.Set("Authorization", "Bearer "+apiKey)
 	}
 
@@ -279,6 +364,13 @@ func (e *Engine) SetActiveModel(provider, model string) error {
 	return e.SaveConfig()
 }
 
+func (e *Engine) SetPort(port string) error {
+	e.mu.Lock()
+	e.cfg.Port = port
+	e.mu.Unlock()
+	return e.SaveConfig()
+}
+
 func (e *Engine) SetTheme(name string) error {
 	e.mu.Lock()
 	e.cfg.Theme = name
@@ -289,7 +381,7 @@ func (e *Engine) SetTheme(name string) error {
 func (e *Engine) SetProviderStatus(name string, enabled bool) error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	
+
 	for i, p := range e.cfg.Providers {
 		if p.Name == name {
 			e.cfg.Providers[i].Enabled = enabled
@@ -339,5 +431,76 @@ func (e *Engine) RemoveProject(path string) error {
 		}
 	}
 	e.cfg.Projects = newProjects
+	return e.SaveConfig()
+}
+
+// DeleteProvider removes a provider and all its models
+func (e *Engine) DeleteProvider(name string) error {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	found := false
+	newProviders := []ProviderConfig{}
+	for _, p := range e.cfg.Providers {
+		if p.Name == name {
+			found = true
+			continue
+		}
+		newProviders = append(newProviders, p)
+	}
+
+	if !found {
+		return fmt.Errorf("provedor %s não encontrado", name)
+	}
+
+	e.cfg.Providers = newProviders
+
+	// Se o provedor excluído era o ativo, limpa
+	if e.cfg.Active.Provider == name {
+		e.cfg.Active.Provider = ""
+		e.cfg.Active.Model = ""
+	}
+
+	return e.SaveConfig()
+}
+
+// DeleteModel removes a model from a specific provider
+func (e *Engine) DeleteModel(providerName, modelName string) error {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	foundProvider := false
+	for i, p := range e.cfg.Providers {
+		if p.Name == providerName {
+			foundProvider = true
+
+			foundModel := false
+			newModels := []ModelConfig{}
+			for _, m := range p.Models {
+				if m.Name == modelName {
+					foundModel = true
+					continue
+				}
+				newModels = append(newModels, m)
+			}
+
+			if !foundModel {
+				return fmt.Errorf("modelo %s não encontrado no provedor %s", modelName, providerName)
+			}
+
+			e.cfg.Providers[i].Models = newModels
+			break
+		}
+	}
+
+	if !foundProvider {
+		return fmt.Errorf("provedor %s não encontrado", providerName)
+	}
+
+	// Se o modelo excluído era o ativo, limpa
+	if e.cfg.Active.Provider == providerName && e.cfg.Active.Model == modelName {
+		e.cfg.Active.Model = ""
+	}
+
 	return e.SaveConfig()
 }

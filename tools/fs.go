@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"spec-wizard/internal/utils"
 	"strings"
 )
 
@@ -125,16 +126,17 @@ func RegisterFSTools(r *Registry) {
 			return "", fmt.Errorf("erro ao gravar arquivo: %v", err)
 		}
 
+		r.RecordTouch(path)
 		return fmt.Sprintf("Arquivo %s gravado com sucesso (%d bytes).", path, len(content)), nil
 	})
 
 	// 4. editar_arquivo (SEARCH/REPLACE)
-	r.Register("edit_file", "Realiza edições precisas em um arquivo local usando blocos de substituição.", `{
+	r.Register("edit_file", "Realiza edições precisas num ficheiro local substituindo um bloco de código exato por outro. O bloco 'search' deve ser ÚNICO no ficheiro e respeitar a indentação exata. Use isto para pequenas alterações em vez de write_file.", `{
 		"type": "object",
 		"properties": {
-			"path": { "type": "string", "description": "Caminho relativo do arquivo." },
-			"search": { "type": "string", "description": "O conteúdo exato a ser localizado no arquivo." },
-			"replace": { "type": "string", "description": "O novo conteúdo para substituir o trecho localizado." }
+			"path": { "type": "string", "description": "O caminho relativo do ficheiro." },
+			"search": { "type": "string", "description": "O bloco de código exato a ser localizado (incluindo espaços e quebras de linha)." },
+			"replace": { "type": "string", "description": "O novo código que irá substituir o bloco localizado." }
 		},
 		"required": ["path", "search", "replace"]
 	}`, func(ctx context.Context, args map[string]any) (string, error) {
@@ -147,27 +149,43 @@ func RegisterFSTools(r *Registry) {
 			return "", err
 		}
 
-		data, err := os.ReadFile(fullPath)
+		if err := utils.EditFile(fullPath, search, replace); err != nil {
+			// O erro retornado pelo motor já é pedagógico e amigável para a IA
+			return "", err
+		}
+
+		r.RecordTouch(path)
+		return fmt.Sprintf("Ficheiro %s atualizado com sucesso.", path), nil
+	})
+
+	// 5. pesquisar_codigo
+	r.Register("search_code", "Pesquisa por uma string exata ou regex num ficheiro e retorna as linhas correspondentes com o contexto em redor. Use esta ferramenta em vez de read_file para ficheiros grandes.", `{
+		"type": "object",
+		"properties": {
+			"path": { "type": "string", "description": "O caminho relativo do ficheiro." },
+			"query": { "type": "string", "description": "O texto ou expressão regular a procurar." },
+			"context_lines": { "type": "integer", "description": "Número de linhas antes e depois do match para incluir como contexto. (Padrão: 5)", "default": 5 }
+		},
+		"required": ["path", "query"]
+	}`, func(ctx context.Context, args map[string]any) (string, error) {
+		path, _ := args["path"].(string)
+		query, _ := args["query"].(string)
+
+		contextLines := 5
+		if cl, ok := args["context_lines"].(float64); ok {
+			contextLines = int(cl)
+		}
+
+		fullPath, err := r.validatePath(path)
 		if err != nil {
-			return "", fmt.Errorf("erro ao ler arquivo para edição: %v", err)
+			return "", err
 		}
 
-		content := string(data)
-		if !strings.Contains(content, search) {
-			return "", fmt.Errorf("trecho de busca não encontrado no arquivo %s. Certifique-se de que o trecho 'search' seja idêntico ao conteúdo do arquivo, incluindo espaços e quebras de linha", path)
+		result, err := utils.SearchCode(fullPath, query, contextLines)
+		if err != nil {
+			return "", fmt.Errorf("erro na pesquisa: %v", err)
 		}
 
-		// Conta ocorrências para evitar edições ambíguas se necessário (opcional)
-		count := strings.Count(content, search)
-		if count > 1 {
-			return "", fmt.Errorf("o trecho de busca foi encontrado %d vezes. Seja mais específico para evitar edições incorretas", count)
-		}
-
-		newContent := strings.Replace(content, search, replace, 1)
-		if err := os.WriteFile(fullPath, []byte(newContent), 0644); err != nil {
-			return "", fmt.Errorf("erro ao salvar arquivo editado: %v", err)
-		}
-
-		return fmt.Sprintf("Arquivo %s editado com sucesso. Substituído 1 bloco.", path), nil
+		return result, nil
 	})
 }

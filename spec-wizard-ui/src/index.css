@@ -49,3 +49,12 @@ body {
 .markdown-body code { @apply bg-slate-100 px-1.5 py-0.5 rounded text-indigo-600 font-mono text-xs; }
 .markdown-body blockquote { @apply border-l-4 border-slate-200 pl-4 italic text-slate-500 mb-4; }
 .markdown-body hr { @apply border-slate-100 my-6; }
+ 
+@keyframes spin-slow {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+.animate-spin-slow {
+  animation: spin-slow 3s linear infinite;
+}

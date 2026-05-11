@@ -10,11 +10,13 @@ export const translations = {
     online: "Online",
     offline: "Offline",
     dashboard: "Dashboard",
+    terminal: "Terminal",
     // Wizard Steps
     step_1: "Identidade",
     step_2: "Arquitetura",
     step_3: "Padrões",
-    step_4: "Negócio",
+    step_4: "Stack",
+    step_5: "Negócio",
     
     // Step 1: Basic Info
     id_and_path: "1. Identificação e Caminho",
@@ -56,6 +58,20 @@ export const translations = {
     consolidated_advice: "Recomendações da Arquitetura",
     boilerplate_score: "Nível de Boilerplate",
     health_score_label: "Score de Saúde Arquitetural",
+
+    // Step 4: Stack Builder
+    stack_configuration: "Configuração da Stack Opinativa",
+    stack_plugin_select: "Selecionar Plugin de Stack",
+    stack_plugin_none: "Nenhum Plugin (Livre)",
+    libraries_manifest: "Manifesto de Bibliotecas (DEPENDENCY MANIFEST)",
+    add_library: "Adicionar Biblioteca",
+    lib_name: "Nome da Biblioteca",
+    lib_mandatory: "Obrigatória",
+    lib_example: "Exemplo de Uso (Few-Shot)",
+    lib_usage_placeholder: "Ex: import 'package:dio/dio.dart'; final dio = Dio(); ...",
+    no_libraries: "Nenhuma biblioteca configurada.",
+    stack_desc_info: "Defina bibliotecas obrigatórias para evitar que a IA alucine dependências.",
+
 
     // Step 2: Architecture
     select_arch: "Selecione a Arquitetura Base",
@@ -118,6 +134,14 @@ export const translations = {
     audit_failed: "Falha na auditoria",
     audit_confidence: "Confiança",
     audit_reasoning: "Raciocínio da IA",
+    test_validation: "Validação de Testes",
+    test_coverage: "COBERTURA DE TESTES",
+    last_validation: "Última Validação",
+    check_tests: "Checar Testes",
+    checking_tests: "Checando...",
+    test_success: "TESTES OK",
+    test_failure: "FALHA NOS TESTES",
+    no_tests_run: "Nenhum teste executado",
     
     // Modals
     task_title: "Título da Tarefa",
@@ -136,6 +160,16 @@ export const translations = {
     status_in_progress: "EM PROGRESSO",
     status_completed: "CONCLUÍDO",
     status_failed: "FALHOU",
+    task_files: "Arquivos da Tarefa",
+    add_file: "Adicionar Arquivo",
+    test_files: "Arquivos de Teste",
+    add_test_file: "Adicionar Arquivo de Teste",
+    task_spec: "Especificação da Tarefa",
+    task_spec_desc: "Instruções Personalizadas (Markdown)",
+    task_spec_help: "Estas instruções serão injetadas no prompt da IA para esta tarefa específica.",
+    bootstrap_spec: "Gerar Spec Base",
+    generate_with_architect: "Gerar com Arquiteto (IA)",
+    confirm_bootstrap: "Deseja gerar a especificação base para esta tarefa usando IA? Isso irá sobrescrever o conteúdo atual.",
     
     // Notifications/Logs
     logs_title: "Console de Execução",
@@ -177,6 +211,26 @@ export const translations = {
     copy_prompt: "Copiar Prompt",
     prompt_copied_msg: "Prompt copiado!",
     close: "Fechar",
+    delete: "Excluir",
+    confirm_delete_provider: "Tem certeza que deseja excluir o provedor {name} e todos os seus modelos?",
+    confirm_delete_model: "Tem certeza que deseja excluir o modelo {name}?",
+    edit_provider: "Editar Provedor",
+    edit_model: "Editar Modelo",
+    update: "Atualizar",
+
+    
+    // LLM Config Modals
+    add_provider: "Novo Provedor",
+    add_model: "Novo Modelo",
+    provider_name: "Nome do Provedor (ex: openai)",
+    api_url: "URL da API (Opcional)",
+    api_key: "Chave da API",
+    env_api_key: "Variável de Ambiente (ex: OPENAI_API_KEY)",
+    model_name: "Nome do Modelo (ex: gpt-4o)",
+    model_label: "Label de Exibição (ex: GPT-4 Omni)",
+    context_window: "Janela de Contexto (ex: 128000)",
+    add: "Adicionar",
+    sequential_mode: "Fila Sequencial (Evita Erro 429)",
     
     // Knowledge Base
     knowledge_base: "Base de Conhecimento",
@@ -194,6 +248,7 @@ export const translations = {
     status_processing: "Processando",
     status_processed: "Processado",
     status_error: "Erro",
+    error: "Erro",
     add_knowledge_success: "Fonte de conhecimento adicionada!",
     upload_success: "Arquivo enviado com sucesso!",
     processing_started: "O processamento foi iniciado em segundo plano.",
@@ -215,11 +270,13 @@ export const translations = {
     online: "Online",
     offline: "Offline",
     dashboard: "Dashboard",
+    terminal: "Terminal",
     // Wizard Steps
     step_1: "Identity",
     step_2: "Architecture",
     step_3: "Patterns",
-    step_4: "Business",
+    step_4: "Stack",
+    step_5: "Business",
     
     // Step 1: Basic Info
     id_and_path: "1. Identity and Path",
@@ -261,6 +318,20 @@ export const translations = {
     consolidated_advice: "Architecture Advice",
     boilerplate_score: "Boilerplate Level",
     health_score_label: "Architectural Health Score",
+
+    // Step 4: Stack Builder
+    stack_configuration: "Opinionated Stack Configuration",
+    stack_plugin_select: "Select Stack Plugin",
+    stack_plugin_none: "No Plugin (Free)",
+    libraries_manifest: "Libraries Manifest (DEPENDENCY MANIFEST)",
+    add_library: "Add Library",
+    lib_name: "Library Name",
+    lib_mandatory: "Mandatory",
+    lib_example: "Usage Example (Few-Shot)",
+    lib_usage_placeholder: "Ex: import 'package:dio/dio.dart'; final dio = Dio(); ...",
+    no_libraries: "No libraries configured.",
+    stack_desc_info: "Define mandatory libraries to prevent AI from hallucinating dependencies.",
+
 
     // Step 2: Architecture
     select_arch: "Select Base Architecture",
@@ -323,6 +394,14 @@ export const translations = {
     audit_failed: "Audit failed",
     audit_confidence: "Confidence",
     audit_reasoning: "AI Reasoning",
+    test_validation: "Test Validation",
+    test_coverage: "TEST COVERAGE",
+    last_validation: "Last Validation",
+    check_tests: "Check Tests",
+    checking_tests: "Checking...",
+    test_success: "TESTS OK",
+    test_failure: "TESTS FAILED",
+    no_tests_run: "No tests run",
     
     // Modals
     task_title: "Task Title",
@@ -341,6 +420,16 @@ export const translations = {
     status_in_progress: "IN PROGRESS",
     status_completed: "COMPLETED",
     status_failed: "FAILED",
+    task_files: "Task Files",
+    add_file: "Add File",
+    test_files: "Test Files",
+    add_test_file: "Add Test File",
+    task_spec: "Task Specification",
+    task_spec_desc: "Custom Instructions (Markdown)",
+    task_spec_help: "These instructions will be injected into the AI prompt for this specific task.",
+    bootstrap_spec: "Generate Base Spec",
+    generate_with_architect: "Generate with Architect (AI)",
+    confirm_bootstrap: "Do you want to generate the base specification for this task using AI? This will overwrite the current content.",
     
     // Notifications/Logs
     logs_title: "Execution Console",
@@ -382,6 +471,26 @@ export const translations = {
     copy_prompt: "Copy Prompt",
     prompt_copied_msg: "Prompt copied!",
     close: "Close",
+    delete: "Delete",
+    confirm_delete_provider: "Are you sure you want to delete provider {name} and all its models?",
+    confirm_delete_model: "Are you sure you want to delete model {name}?",
+    edit_provider: "Edit Provider",
+    edit_model: "Edit Model",
+    update: "Update",
+
+    
+    // LLM Config Modals
+    add_provider: "New Provider",
+    add_model: "New Model",
+    provider_name: "Provider Name (ex: openai)",
+    api_url: "API URL (Optional)",
+    api_key: "API Key",
+    env_api_key: "Environment Variable (ex: OPENAI_API_KEY)",
+    model_name: "Model Name (ex: gpt-4o)",
+    model_label: "Display Label (ex: GPT-4 Omni)",
+    context_window: "Context Window (ex: 128000)",
+    add: "Add",
+    sequential_mode: "Sequential Queue (Avoids 429 Error)",
 
     // Knowledge Base
     knowledge_base: "Knowledge Base",
@@ -399,6 +508,7 @@ export const translations = {
     status_processing: "Processing",
     status_processed: "Processed",
     status_error: "Error",
+    error: "Error",
     add_knowledge_success: "Knowledge source added!",
     upload_success: "File uploaded successfully!",
     processing_started: "Processing has started in the background.",
@@ -420,11 +530,13 @@ export const translations = {
     online: "En línea",
     offline: "Desconectado",
     dashboard: "Tablero",
+    terminal: "Terminal",
     // Wizard Steps
     step_1: "Identidad",
     step_2: "Arquitectura",
     step_3: "Patrones",
-    step_4: "Negocio",
+    step_4: "Stack",
+    step_5: "Negocio",
     
     // Step 1: Basic Info
     id_and_path: "1. Identificación y Ruta",
@@ -466,6 +578,20 @@ export const translations = {
     consolidated_advice: "Recomendaciones de Arquitectura",
     boilerplate_score: "Nivel de Boilerplate",
     health_score_label: "Puntuación de Salud Arquitectónica",
+
+    // Step 4: Stack Builder
+    stack_configuration: "Configuración de Stack Opinativa",
+    stack_plugin_select: "Seleccionar Plugin de Stack",
+    stack_plugin_none: "Sin Plugin (Libre)",
+    libraries_manifest: "Manifiesto de Librerías (DEPENDENCY MANIFEST)",
+    add_library: "Agregar Librería",
+    lib_name: "Nombre de la Librería",
+    lib_mandatory: "Obligatoria",
+    lib_example: "Ejemplo de Uso (Few-Shot)",
+    lib_usage_placeholder: "Ej: import 'package:dio/dio.dart'; final dio = Dio(); ...",
+    no_libraries: "No hay librerías configuradas.",
+    stack_desc_info: "Defina librerías obligatorias para evitar que la IA alucine dependencias.",
+
 
     // Step 2: Architecture
     select_arch: "Seleccione Arquitectura Base",
@@ -546,6 +672,14 @@ export const translations = {
     status_in_progress: "EN PROGRESO",
     status_completed: "COMPLETADO",
     status_failed: "FALLIDO",
+    task_files: "Archivos de la Tarea",
+    add_file: "Añadir Archivo",
+    task_spec: "Especificación de la Tarea",
+    task_spec_desc: "Instrucciones Personalizadas (Markdown)",
+    task_spec_help: "Estas instrucciones se inyectarán en el prompt de la IA para esta tarea específica.",
+    bootstrap_spec: "Generar Spec Base",
+    generate_with_architect: "Generar con Arquitecto (IA)",
+    confirm_bootstrap: "¿Desea generar la especificación base para esta tarea usando IA? Esto sobrescribirá el contenido actual.",
     
     // Notifications/Logs
     logs_title: "Consola de Ejecución",
@@ -587,6 +721,13 @@ export const translations = {
     copy_prompt: "Copiar Prompt",
     prompt_copied_msg: "¡Prompt copiado!",
     close: "Cerrar",
+    delete: "Eliminar",
+    confirm_delete_provider: "¿Está seguro de que deseja eliminar el proveedor {name} y todos sus modelos?",
+    confirm_delete_model: "¿Está seguro de que deseja eliminar el modelo {name}?",
+    edit_provider: "Editar Proveedor",
+    edit_model: "Editar Modelo",
+    update: "Actualizar",
+
 
     // Knowledge Base
     knowledge_base: "Base de Conocimiento",
@@ -604,8 +745,10 @@ export const translations = {
     status_processing: "Procesando",
     status_processed: "Procesado",
     status_error: "Error",
+    error: "Error",
     add_knowledge_success: "¡Fuente de conocimiento agregada!",
     upload_success: "¡Archivo subido con éxito!",
-    processing_started: "El procesamiento se ha iniciado en segundo plano."
+    processing_started: "El procesamiento se ha iniciado en segundo plano.",
+    sequential_mode: "Cola Secuencial (Evita Error 429)",
   }
 };

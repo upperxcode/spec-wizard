@@ -35,6 +35,27 @@ SUPPORTED_OPTIONS = {
         {"id": "sql", "name": "Relacional (SQL)", "libs": ["sqflite", "drift", "floor", "supabase_flutter"]},
         {"id": "nosql", "name": "NoSQL", "libs": ["hive", "isar", "shared_preferences", "firebase_core"]},
         {"id": "remote", "name": "Apenas Remoto (API)", "libs": ["dio", "http", "chopper"]}
+    ],
+    "stack_templates": [
+        {
+            "id": "flutter_standard",
+            "name": "Flutter (Standard - Dio/GetIt/Bloc)",
+            "libraries": [
+                { "name": "dio", "mandatory": true, "usage_example": "import 'package:dio/dio.dart';\nfinal dio = Dio();\nfinal response = await dio.get('https://api.example.com');" },
+                { "name": "get_it", "mandatory": true, "usage_example": "final getIt = GetIt.instance;\ngetIt.registerLazySingleton<Repository>(() => RepositoryImpl());\nfinal repo = getIt<Repository>();" },
+                { "name": "flutter_bloc", "mandatory": true, "usage_example": "BlocProvider(create: (context) => MyBloc(), child: ...);\ncontext.read<MyBloc>().add(MyEvent());" }
+            ]
+        },
+        {
+            "id": "flutter_enterprise",
+            "name": "Flutter (Enterprise - Riverpod/Freezed/Hooks)",
+            "libraries": [
+                { "name": "flutter_riverpod", "mandatory": true, "usage_example": "final userProvider = StateProvider((ref) => User());\nfinal user = ref.watch(userProvider);" },
+                { "name": "freezed_annotation", "mandatory": true, "usage_example": "@freezed\nclass User with _$User {\n  const factory User({String? name}) = _User;\n}" },
+                { "name": "flutter_hooks", "mandatory": true, "usage_example": "final controller = useTextEditingController();\nuseEffect(() { ... }, []);" },
+                { "name": "dio", "mandatory": true, "usage_example": "final response = await dio.get('/endpoint');" }
+            ]
+        }
     ]
 }
 
@@ -47,7 +68,8 @@ DATA_SPECIALIZATIONS = {
     "floor": "Floor (Local SQL)",
     "hive": "Hive (Local NoSQL)",
     "isar": "Isar (Local NoSQL)",
-    "shared_preferences": "Shared Preferences (Local Cache)",
+    "realm": "Realm (Object DB)",
+    "shared_preferences": "Local Key-Value Storage",
     "dio": "Dio HTTP Client",
     "http": "Standard HTTP Client"
 }

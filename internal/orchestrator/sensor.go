@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"spec-wizard/internal/registry"
 	"strings"
 )
 
@@ -22,27 +23,51 @@ type SensorManager struct {
 	ProjectPath   string
 	Language      string
 	SensorResults []SensorResult
+	Plugin        *registry.ExpertPlugin
 }
 
-func NewSensorManager(projectPath, language string) *SensorManager {
+func NewSensorManager(projectPath, language string, plugin *registry.ExpertPlugin) *SensorManager {
 	return &SensorManager{
 		ProjectPath:   projectPath,
 		Language:      language,
 		SensorResults: make([]SensorResult, 0),
+		Plugin:        plugin,
 	}
 }
 
 // RunValidation executa os sensores apropriados para a linguagem
-func (sm *SensorManager) RunValidation() error {
-	fmt.Printf("🔍 Executando sensores de validação para %s...\n", sm.Language)
+func (sm *SensorManager) RunValidation(touchedFiles []string) error {
+	fmt.Printf("🔍 Executando sensores de validação para %s (Focado em %d arquivos)...\n", sm.Language, len(touchedFiles))
 
+	// Identifica pacotes afetados
+	affectedPkgs := make(map[string]bool)
+	for _, f := range touchedFiles {
+		dir := filepath.Dir(f)
+		if dir != "." && dir != "" {
+			affectedPkgs[dir] = true
+		}
+	}
+
+	// Pre-validação: Sanidade de dependências para Go
+	if strings.ToLower(sm.Language) == "go" {
+		sm.runSensor("go_mod_tidy", "go", []string{"mod", "tidy"})
+	}
+
+	// 1. Tenta usar instrução de testes definida no plugin (MCP)
+	if sm.Plugin != nil && sm.Plugin.TestConfig != nil && sm.Plugin.TestConfig.Command != "" {
+		fmt.Printf("📦 Usando configuração de testes do Expert %s\n", sm.Plugin.ID)
+		sm.runSensor("expert_test_command", "bash", []string{"-c", sm.Plugin.TestConfig.Command})
+		return nil
+	}
+
+	// 2. Fallback para sensores nativos/hardcoded
 	switch strings.ToLower(sm.Language) {
 	case "flutter":
-		sm.runFlutterSensors()
+		sm.runFlutterSensors(affectedPkgs)
 	case "typescript", "node":
 		sm.runTypeScriptSensors()
 	case "go":
-		sm.runGoSensors()
+		sm.runGoSensors(affectedPkgs)
 	default:
 		return fmt.Errorf("linguagem não suportada: %s", sm.Language)
 	}
@@ -51,12 +76,18 @@ func (sm *SensorManager) RunValidation() error {
 }
 
 // runFlutterSensors executa validações específicas para Flutter
-func (sm *SensorManager) runFlutterSensors() {
+func (sm *SensorManager) runFlutterSensors(affectedPkgs map[string]bool) {
 	// 1. flutter analyze - Análise estática
 	sm.runSensor("flutter_analyze", "flutter", []string{"analyze"})
 
-	// 2. flutter test - Testes unitários
-	sm.runSensor("flutter_test", "flutter", []string{"test"})
+	// 2. flutter test - Testes unitários focados ou globais
+	testArgs := []string{"test"}
+	if len(affectedPkgs) > 0 {
+		for pkg := range affectedPkgs {
+			testArgs = append(testArgs, pkg)
+		}
+	}
+	sm.runSensor("flutter_test", "flutter", testArgs)
 
 	// 3. flutter pub get - Validação de dependências
 	sm.runSensor("flutter_pub_get", "flutter", []string{"pub", "get"})
@@ -78,17 +109,28 @@ func (sm *SensorManager) runTypeScriptSensors() {
 }
 
 // runGoSensors executa validações específicas para Go
-func (sm *SensorManager) runGoSensors() {
-	// 1. go fmt - Formatação
+func (sm *SensorManager) runGoSensors(affectedPkgs map[string]bool) {
+	// 0. go mod tidy
+	sm.runSensor("go_mod_tidy", "go", []string{"mod", "tidy"})
+
+	// 1. go fmt
 	sm.runSensor("go_fmt", "go", []string{"fmt", "./..."})
 
-	// 2. go vet - Análise estática
+	// 2. go vet
 	sm.runSensor("go_vet", "go", []string{"vet", "./..."})
 
-	// 3. go test - Testes
-	sm.runSensor("go_test", "go", []string{"test", "-v", "./..."})
+	// 3. go test - Testes focados ou globais
+	testArgs := []string{"test", "-v"}
+	if len(affectedPkgs) > 0 {
+		for pkg := range affectedPkgs {
+			testArgs = append(testArgs, "./"+pkg)
+		}
+	} else {
+		testArgs = append(testArgs, "./...")
+	}
+	sm.runSensor("go_test", "go", testArgs)
 
-	// 4. go build - Compilação
+	// 4. go build
 	sm.runSensor("go_build", "go", []string{"build", "./..."})
 }
 
@@ -131,6 +173,17 @@ func (sm *SensorManager) HasFailures() bool {
 
 // GetFailureReport retorna relatório detalhado das falhas
 func (sm *SensorManager) GetFailureReport() string {
+	hasFailures := false
+	for _, r := range sm.SensorResults {
+		if r.Status == "fail" {
+			hasFailures = true
+			break
+		}
+	}
+	if !hasFailures {
+		return ""
+	}
+
 	var report strings.Builder
 	report.WriteString("# 🚨 Relatório de Falhas de Validação\n\n")
 

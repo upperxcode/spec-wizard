@@ -16,31 +16,19 @@ import (
 
 // CleanJSONResponse extrai o conteúdo JSON de dentro de blocos de código Markdown, se presentes
 func CleanJSONResponse(input string) string {
-	// 1. Tenta encontrar o bloco {...} mais provável usando o primeiro { e o último }
+	// 1. Tenta extrair o conteúdo entre o primeiro { e o último }
 	start := strings.Index(input, "{")
 	end := strings.LastIndex(input, "}")
 
 	if start != -1 && end != -1 && end > start {
 		candidate := input[start : end+1]
-		// Remove marcações markdown que possam ter ficado dentro (ex: ```json { ... } ```)
+		// Remove marcações de bloco de código markdown que possam ter sido capturadas
 		candidate = strings.ReplaceAll(candidate, "```json", "")
 		candidate = strings.ReplaceAll(candidate, "```", "")
 		return strings.TrimSpace(candidate)
 	}
 
-	// 2. Fallback: Limpeza básica de markdown
-	clean := input
-	if idx := strings.Index(clean, "```json"); idx != -1 {
-		clean = clean[idx+7:]
-	} else if idx := strings.Index(clean, "```"); idx != -1 {
-		clean = clean[idx+3:]
-	}
-
-	if idx := strings.LastIndex(clean, "```"); idx != -1 {
-		clean = clean[:idx]
-	}
-
-	return strings.TrimSpace(clean)
+	return strings.TrimSpace(input)
 }
 
 // GenerateInitialRoadmap coordena a criação do plano de ação via IA
@@ -77,8 +65,26 @@ func (o *Orchestrator) GenerateInitialRoadmap(config ProjectConfig) (*ProjectRoa
 	}
 
 	var roadmap ProjectRoadmap
-	if err := json.Unmarshal([]byte(cleanedJSON), &roadmap); err != nil {
-		return nil, fmt.Errorf("erro ao processar JSON da IA: %v | Raw: %s", err, cleanedJSON)
+	maxRetries := 2
+	currentTry := 0
+
+	for currentTry <= maxRetries {
+		if err := json.Unmarshal([]byte(cleanedJSON), &roadmap); err == nil {
+			break
+		} else {
+			if currentTry == maxRetries {
+				return nil, fmt.Errorf("erro ao processar JSON da IA após %d tentativas: %v | Raw: %s", maxRetries, err, cleanedJSON)
+			}
+			currentTry++
+			fmt.Printf("⚠️ JSON malformado (tentativa %d/%d). Solicitando correção à IA... Erro: %v\n", currentTry, maxRetries, err)
+
+			correctionPrompt := fmt.Sprintf("O seu JSON anterior resultou em um erro de parse: %v. Por favor, corrija o JSON e retorne APENAS o objeto JSON puro, sem markdown ou explicações.", err)
+			rawResponse, err = llmClient.Ask(correctionPrompt)
+			if err != nil {
+				return nil, err
+			}
+			cleanedJSON = CleanJSONResponse(rawResponse)
+		}
 	}
 
 	// Persiste o arquivo para que o Dashboard e a IA possam consultar
@@ -115,8 +121,13 @@ func (o *Orchestrator) SaveRoadmap(roadmap ProjectRoadmap) error {
 	return o.SaveRoadmapToMarkdown(&roadmap)
 }
 
-// UpdateTaskStatus permite que sensores ou o usuário marquem o progresso
+// UpdateTaskStatus permite que sensores ou o usuário marquem o progresso básico
 func (o *Orchestrator) UpdateTaskStatus(sprintID, taskID FlexibleID, status string) error {
+	return o.UpdateTaskProgress(sprintID, taskID, status, "", "", nil, nil, nil)
+}
+
+// UpdateTaskProgress é a versão completa para atualizações automáticas via Harness/Expert
+func (o *Orchestrator) UpdateTaskProgress(sprintID, taskID FlexibleID, status, logs, testStatus string, criteria []AcceptanceCriterion, files, testFiles []string) error {
 	path := filepath.Join(o.ProjectPath, ".spec-wizard", "sprints.json")
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -128,13 +139,27 @@ func (o *Orchestrator) UpdateTaskStatus(sprintID, taskID FlexibleID, status stri
 		return err
 	}
 
-	// Atualiza a tarefa específica
 	found := false
 	for i := range roadmap.Sprints {
 		if roadmap.Sprints[i].ID == sprintID {
 			for j := range roadmap.Sprints[i].Tasks {
 				if roadmap.Sprints[i].Tasks[j].ID == taskID {
 					roadmap.Sprints[i].Tasks[j].Status = status
+					if logs != "" {
+						roadmap.Sprints[i].Tasks[j].TestLogs = logs
+					}
+					if testStatus != "" {
+						roadmap.Sprints[i].Tasks[j].TestStatus = testStatus
+					}
+					if criteria != nil {
+						roadmap.Sprints[i].Tasks[j].AcceptanceCriteria = criteria
+					}
+					if len(files) > 0 {
+						roadmap.Sprints[i].Tasks[j].Files = uniqueStrings(append(roadmap.Sprints[i].Tasks[j].Files, files...))
+					}
+					if len(testFiles) > 0 {
+						roadmap.Sprints[i].Tasks[j].TestFiles = uniqueStrings(append(roadmap.Sprints[i].Tasks[j].TestFiles, testFiles...))
+					}
 					found = true
 					break
 				}
@@ -219,8 +244,26 @@ func (o *Orchestrator) UpdateRoadmapFromCode(config ProjectConfig) (*ProjectRoad
 	cleanedJSON := CleanJSONResponse(roadmapResponse)
 
 	var roadmap ProjectRoadmap
-	if err := json.Unmarshal([]byte(cleanedJSON), &roadmap); err != nil {
-		return nil, fmt.Errorf("erro ao processar JSON da IA: %v | Raw: %s", err, cleanedJSON)
+	maxRetries := 2
+	currentTry := 0
+
+	for currentTry <= maxRetries {
+		if err := json.Unmarshal([]byte(cleanedJSON), &roadmap); err == nil {
+			break
+		} else {
+			if currentTry == maxRetries {
+				return nil, fmt.Errorf("erro ao processar JSON da IA na Fase 2 após %d tentativas: %v | Raw: %s", maxRetries, err, cleanedJSON)
+			}
+			currentTry++
+			fmt.Printf("⚠️ JSON de Roadmap malformado (Fase 2, tentativa %d/%d). Solicitando correção... Erro: %v\n", currentTry, maxRetries, err)
+
+			correctionPrompt := fmt.Sprintf("O seu JSON de Roadmap anterior resultou em um erro: %v. Por favor, corrija o JSON e retorne APENAS o objeto JSON puro, sem markdown ou explicações.", err)
+			roadmapResponse, err = llmClient.Ask(correctionPrompt)
+			if err != nil {
+				return nil, err
+			}
+			cleanedJSON = CleanJSONResponse(roadmapResponse)
+		}
 	}
 
 	config.RoadmapLastUpdated = time.Now().Format("2006-01-02 15:04:05")
@@ -351,7 +394,7 @@ func (o *Orchestrator) AuditTask(ctx context.Context, sprintID, taskID FlexibleI
 	auditPrompt := factory.GenerateAuditTaskPrompt(prompt.ExecutionContext{
 		TaskTitle:          targetTask.Title,
 		TaskDescription:    targetTask.Description,
-		AcceptanceCriteria: targetTask.AcceptanceCriteria,
+		AcceptanceCriteria: targetTask.GetCriteriaStrings(),
 		Spec:               taskContext.Spec,
 		FileTree:           o.generateFileTree(config.ExcludePatterns),
 		KnowledgeBase:      o.getCriticalContext(), // Reutiliza o peek de arquivos para evidência
@@ -520,4 +563,154 @@ func (o *Orchestrator) PreviewRoadmapPrompt(config ProjectConfig) string {
 	}, fileTree, "[PHASE 1 MAPPING DATA WILL BE INJECTED HERE]")
 
 	return fmt.Sprintf("--- PHASE 1: MODULE MAPPING PROMPT ---\n%s\n\n--- PHASE 2: STRATEGIC ROADMAP PROMPT ---\n%s", mappingPrompt, roadmapPrompt)
+}
+
+type aiAuditResponse struct {
+	Criteria            []AcceptanceCriterion `json:"criteria"`
+	ImplementationFiles []string              `json:"implementation_files"`
+	TestFiles           []string              `json:"test_files"`
+	Summary             string                `json:"summary"`
+}
+
+// AuditTaskProgress realiza uma auditoria profunda usando a IA para validar critérios de aceite baseada em logs de execução/sensores
+func (o *Orchestrator) AuditTaskProgress(ctx context.Context, config ProjectConfig, sprintID, taskID FlexibleID, report string) ([]AcceptanceCriterion, []string, []string, string, error) {
+	fmt.Printf("🤖 [AuditTaskProgress] Chamada recebida para Tarefa: %s, Sprint: %s\n", taskID, sprintID)
+	if report != "" {
+		fmt.Printf("📝 [AuditTaskProgress] Logs de falha detectados (%d bytes). Iniciando análise de reparo...\n", len(report))
+	} else {
+		fmt.Printf("✅ [AuditTaskProgress] Nenhum log de falha recebido. Validando critérios de sucesso.\n")
+	}
+
+	var roadmap ProjectRoadmap
+	path := filepath.Join(o.ProjectPath, ".spec-wizard", "sprints.json")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		// Se não encontrar o arquivo, tenta pegar da config
+		if config.Roadmap != nil {
+			roadmapData, _ := json.Marshal(config.Roadmap)
+			json.Unmarshal(roadmapData, &roadmap)
+		}
+	} else {
+		if err := json.Unmarshal(data, &roadmap); err != nil {
+			return nil, nil, nil, "", fmt.Errorf("erro ao decodificar roadmap: %v", err)
+		}
+	}
+
+	if len(roadmap.Sprints) == 0 {
+		return nil, nil, nil, "", fmt.Errorf("roadmap não encontrado ou vazio")
+	}
+
+	var targetTask *Task
+	for i := range roadmap.Sprints {
+		if roadmap.Sprints[i].ID == sprintID {
+			for j := range roadmap.Sprints[i].Tasks {
+				if roadmap.Sprints[i].Tasks[j].ID == taskID {
+					targetTask = &roadmap.Sprints[i].Tasks[j]
+					break
+				}
+			}
+		}
+	}
+
+	if targetTask == nil {
+		return nil, nil, nil, "", fmt.Errorf("tarefa %s não encontrada na Sprint %s", taskID, sprintID)
+	}
+
+	llmClient, err := o.GetLLMClient(config)
+	if err != nil {
+		return nil, nil, nil, "", err
+	}
+
+	factory := prompt.NewPromptFactory()
+	maxAuditAttempts := 5 // Aumentado para 5 para dar mais fôlego
+	currentReport := report
+	var finalResponse string
+	testsPassing := false
+
+	// Tenta ler o go.mod para injetar no prompt
+	goModContent := ""
+	if data, err := os.ReadFile(filepath.Join(o.ProjectPath, "go.mod")); err == nil {
+		goModContent = "\n### PROJECT MODULE (go.mod):\n" + string(data) + "\n"
+	}
+
+	for attempt := 1; attempt <= maxAuditAttempts; attempt++ {
+		logger.Info(fmt.Sprintf("🔍 [AuditLoop] Tentativa %d de %d", attempt, maxAuditAttempts), "testsPassing", testsPassing)
+
+		executionContext := prompt.ExecutionContext{
+			TaskTitle:          targetTask.Title,
+			TaskDescription:    targetTask.Description,
+			AcceptanceCriteria: targetTask.GetCriteriaStrings(),
+			TestFiles:          targetTask.TestFiles,
+			FileTree:           o.generateFileTree(config.ExcludePatterns),
+			TestLogs:           currentReport,
+		}
+		
+		var auditPrompt string
+		if testsPassing {
+			auditPrompt = fmt.Sprintf(`✅ SUCCESS! All tests passed and the project compiles.
+DO NOT modify any more files. Your task is now to provide the final AI Audit Report in JSON format.
+
+### FINAL TASK:
+Verify if all acceptance criteria were met and generate the final JSON response.
+%s`, factory.GenerateAcceptanceCriteriaAuditPrompt(executionContext))
+		} else if attempt > 1 {
+			auditPrompt = fmt.Sprintf("⚠️ FOLLOW-UP REPAIR ATTEMPT %d:\nYour previous attempt did not solve all issues. The tests are STILL FAILING. You MUST use your tools (write_file/edit_file) to fix the errors shown below. Do not just analyze, ACT.\n\nSTILL FAILING LOGS:\n%s\n\n%s", attempt, currentReport, factory.GenerateAcceptanceCriteriaAuditPrompt(executionContext))
+		} else {
+			auditPrompt = factory.GenerateAcceptanceCriteriaAuditPrompt(executionContext)
+		}
+
+		if config.Language == "go" && goModContent != "" {
+			auditPrompt = goModContent + "\n" + auditPrompt
+		}
+
+		rawResponse, err := llmClient.AskWithContext(ctx, auditPrompt, nil)
+		if err != nil {
+			return nil, nil, nil, "", err
+		}
+		finalResponse = rawResponse
+
+		// Loga o início da resposta para debug
+		respSnippet := finalResponse
+		if len(respSnippet) > 100 {
+			respSnippet = respSnippet[:100]
+		}
+		logger.Info("✨ IA respondeu", "snippet", respSnippet)
+
+		// 1. Captura arquivos alterados pelas ferramentas do GoClaw
+		touchedFiles := o.Tools.GetTouchedFiles()
+		
+		// 2. SEMPRE roda o sensor do PLUGIN para validar a realidade atual
+		success, newReport, sensorErr := o.RunSensor(config.Language, touchedFiles)
+		if sensorErr != nil {
+			logger.Warn("⚠️ [AuditLoop] Erro técnico no sensor", "error", sensorErr)
+		}
+		
+		currentReport = newReport
+		testsPassing = success
+
+		// Se os testes passaram e a IA enviou o JSON de auditoria, encerramos!
+		hasJson := strings.Contains(finalResponse, "{")
+		isAudit := strings.Contains(finalResponse, "criteria") || strings.Contains(finalResponse, "status") || strings.Contains(finalResponse, "completed")
+		
+		if testsPassing && hasJson && isAudit {
+			logger.Info("🎯 [AuditLoop] Auditoria finalizada com sucesso!")
+			break
+		}
+
+		if testsPassing {
+			logger.Info("✅ [AuditLoop] Testes passando, aguardando relatório final...")
+		} else if len(touchedFiles) == 0 {
+			logger.Warn("⚠️ [AuditLoop] IA foi inerte (não usou ferramentas) e os testes continuam falhando.")
+		} else {
+			logger.Warn("❌ [AuditLoop] Testes falhando, tentando reparo...", "attempt", attempt)
+		}
+	}
+
+	cleanedJSON := CleanJSONResponse(finalResponse)
+	var result aiAuditResponse
+	if err := json.Unmarshal([]byte(cleanedJSON), &result); err != nil {
+		return nil, nil, nil, "", fmt.Errorf("erro ao decodificar resposta da auditoria: %v | Raw: %s", err, cleanedJSON)
+	}
+
+	return result.Criteria, result.ImplementationFiles, result.TestFiles, result.Summary, nil
 }

@@ -8,6 +8,7 @@ import (
 	"spec-wizard/config"
 	"spec-wizard/internal/patterns"
 	"spec-wizard/internal/registry"
+	"spec-wizard/internal/storage"
 	adatools "spec-wizard/tools"
 	"time"
 )
@@ -17,12 +18,22 @@ func NewOrchestrator(path string, plugins []*registry.ExpertPlugin, engine *conf
 	adatools.RegisterFSTools(reg)
 	adatools.RegisterShellTools(reg)
 
+	// Inicializar SnapshotManager (DB de Histórico)
+	home, _ := os.UserHomeDir()
+	dbDir := filepath.Join(home, ".spec-wizard")
+	os.MkdirAll(dbDir, 0755)
+	sm, err := storage.NewSnapshotManager(filepath.Join(dbDir, "history.db"))
+	if err != nil {
+		fmt.Printf("⚠️ [Orchestrator] Falha ao iniciar SnapshotManager (histórico desativado): %v\n", err)
+	}
+
 	return &Orchestrator{
 		ProjectPath: path,
 		Plugins:     plugins,
 		Tools:       reg,
 		Engine:      engine,
 		KM:          NewKnowledgeManager(path),
+		SnapshotMgr: sm,
 	}
 }
 

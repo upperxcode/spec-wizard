@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"spec-wizard/config"
 	"spec-wizard/internal/registry"
+	"spec-wizard/internal/storage"
 	adatools "spec-wizard/tools"
 )
 
@@ -62,16 +63,19 @@ type Orchestrator struct {
 	Tools       *adatools.Registry
 	Engine      *config.Engine
 	KM          *KnowledgeManager
+	SnapshotMgr *storage.SnapshotManager // Novo: Gerenciador de Snapshots
 	Mode        WizardMode
 	onProgress  func(string)
 }
 
 type LLMConfig struct {
-	Provider  string `json:"provider"` // "openai", "anthropic", "gemini", "ollama", "lmstudio"
-	Model     string `json:"model"`
-	APIKey    string `json:"apiKey,omitempty"`
-	EnvAPIKey string `json:"envApiKey,omitempty"`
-	BaseURL   string `json:"baseUrl,omitempty"`
+	Provider   string `json:"provider"` // "openai", "anthropic", "gemini", "ollama", "lmstudio"
+	Model      string `json:"model"`
+	APIKey     string `json:"apiKey,omitempty"`
+	EnvAPIKey  string `json:"envApiKey,omitempty"`
+	BaseURL    string `json:"baseUrl,omitempty"`
+	Sequential bool   `json:"sequential,omitempty"`
+	UseCLI     bool   `json:"useCLI,omitempty"`
 }
 
 // ProjectConfig define as configurações técnicas e de negócio do projeto
@@ -95,16 +99,74 @@ type ProjectConfig struct {
 	UserLanguage              string            `json:"userLanguage,omitempty"`
 	KnowledgeBase             []KnowledgeSource `json:"knowledgeBase,omitempty"`
 	ExcludePatterns           []string          `json:"excludePatterns,omitempty"`
+	Stack                     *StackPlugin      `json:"stack,omitempty"`
+	CurrentSprint             *Sprint           `json:"currentSprint,omitempty"` // Fallback para execução sem arquivo
+	CurrentTask               *Task             `json:"currentTask,omitempty"`   // Fallback para execução sem arquivo
 }
 
-// Task representa uma unidade de trabalho dentro de uma sprint
+// AcceptanceCriterion representa um critério individual e seu estado de validação
+type AcceptanceCriterion struct {
+	Description string `json:"description"`
+	Status      string `json:"status"` // "pending", "met", "unmet"
+	Feedback    string `json:"feedback,omitempty"`
+}
+
 type Task struct {
-	ID                 FlexibleID `json:"id"`
-	Title              string     `json:"title"`
-	Priority           string     `json:"priority"` // "HIGH", "MEDIUM", "LOW"
-	Description        string     `json:"description"`
-	AcceptanceCriteria []string   `json:"acceptance_criteria"`
-	Status             string     `json:"status"` // "pending", "in_progress", "completed", "failed"
+	ID                 FlexibleID            `json:"id"`
+	Title              string                `json:"title"`
+	Priority           string                `json:"priority"` // "HIGH", "MEDIUM", "LOW"
+	Description        string                `json:"description"`
+	AcceptanceCriteria []AcceptanceCriterion `json:"acceptance_criteria"`
+	Status             string                `json:"status"` // "pending", "in_progress", "completed", "failed"
+	TestLogs           string                `json:"test_logs,omitempty"`
+	TestStatus         string                `json:"test_status,omitempty"` // "success", "failure"
+	TestFiles          []string              `json:"test_files,omitempty"`
+	Files              []string              `json:"files,omitempty"`
+}
+
+// UnmarshalJSON para Task para suportar migração de acceptance_criteria (string[] -> object[])
+func (t *Task) UnmarshalJSON(data []byte) error {
+	type Alias Task
+	aux := &struct {
+		AcceptanceCriteria interface{} `json:"acceptance_criteria"`
+		*Alias
+	}{
+		Alias: (*Alias)(t),
+	}
+	if err := json.Unmarshal(data, &aux); err != nil {
+		return err
+	}
+
+	if aux.AcceptanceCriteria != nil {
+		switch v := aux.AcceptanceCriteria.(type) {
+		case []interface{}:
+			var criteria []AcceptanceCriterion
+			for _, item := range v {
+				switch c := item.(type) {
+				case string:
+					criteria = append(criteria, AcceptanceCriterion{Description: c, Status: "pending"})
+				case map[string]interface{}:
+					desc, _ := c["description"].(string)
+					status, _ := c["status"].(string)
+					if status == "" {
+						status = "pending"
+					}
+					criteria = append(criteria, AcceptanceCriterion{Description: desc, Status: status})
+				}
+			}
+			t.AcceptanceCriteria = criteria
+		}
+	}
+	return nil
+}
+
+// GetCriteriaStrings retorna os critérios de aceite apenas como strings
+func (t *Task) GetCriteriaStrings() []string {
+	var result []string
+	for _, c := range t.AcceptanceCriteria {
+		result = append(result, c.Description)
+	}
+	return result
 }
 
 // Sprint agrupa tarefas com um objetivo comum
@@ -116,7 +178,8 @@ type Sprint struct {
 
 // ProjectRoadmap é o plano mestre de execução
 type ProjectRoadmap struct {
-	Language string   `json:"language"`
-	Pattern  string   `json:"pattern"`
-	Sprints  []Sprint `json:"sprints"`
+	ProjectName string   `json:"project_name"`
+	Language    string   `json:"language"`
+	Pattern     string   `json:"pattern"`
+	Sprints     []Sprint `json:"sprints"`
 }

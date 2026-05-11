@@ -15,9 +15,11 @@ type TaskContext struct {
 	TaskTitle          string            `json:"task_title"`
 	TaskDescription    string            `json:"task_description"`
 	AcceptanceCriteria []string          `json:"acceptance_criteria"`
-	Spec               string            `json:"spec_content"`
+	Spec               string            `json:"spec_content"`      // Spec Global
+	TaskSpec           string            `json:"task_spec_content"` // Spec Específica da Tarefa
 	Skills             string            `json:"skills_content"`
 	KnowledgeContent   string            `json:"knowledge_content,omitempty"`
+	Stack              *StackPlugin      `json:"stack,omitempty"`
 	PreviousContext    map[string]string `json:"previous_context,omitempty"` // Contexto de tarefas anteriores se necessário
 }
 
@@ -60,15 +62,27 @@ func (ca *ContextAssembler) AssembleTaskContext(task Task, sprint Sprint, plugin
 	km := NewKnowledgeManager(ca.ProjectPath)
 	knowledge := km.GetRelevantContext(task.Title, task.Description)
 
-	// 5. Monta o contexto da tarefa
+	// 5. Carrega Spec específica da tarefa (se existir)
+	taskSpecFile := fmt.Sprintf("tasks/task-%s.md", task.ID)
+	taskSpec, _ := ca.loadFile(taskSpecFile)
+	if taskSpec == "" {
+		taskSpec = "[Nenhuma especificação personalizada encontrada para esta tarefa específica. Siga os padrões globais.]"
+	}
+
+	// 6. Carrega Stack Plugin (se houver)
+	stack, _ := LoadStackPlugin(filepath.Join(ca.WizardPath, "stack.json"))
+
+	// 7. Monta o contexto da tarefa
 	taskContext := &TaskContext{
 		TaskID:             fmt.Sprintf("task-%s", task.ID),
 		TaskTitle:          task.Title,
 		TaskDescription:    task.Description,
-		AcceptanceCriteria: task.AcceptanceCriteria,
+		AcceptanceCriteria: task.GetCriteriaStrings(),
 		Spec:               spec,
+		TaskSpec:           taskSpec,
 		Skills:             skills,
 		KnowledgeContent:   knowledge,
+		Stack:              stack,
 		PreviousContext: map[string]string{
 			"business_requirements": prd,
 		},
@@ -104,6 +118,14 @@ func (ca *ContextAssembler) BuildPromptForTask(taskCtx *TaskContext) string {
 	prompt.WriteString(taskCtx.Spec)
 	prompt.WriteString("\n\n")
 
+	// Especificação Específica da Tarefa
+	if taskCtx.TaskSpec != "" && !strings.Contains(taskCtx.TaskSpec, "Nenhuma especificação personalizada encontrada") {
+		prompt.WriteString("## 📋 Especificação Detalhada da Tarefa (Contrato de Implementação)\n")
+		prompt.WriteString("⚠️ **ESTA SEÇÃO TEM PRECEDÊNCIA SOBRE A SPEC GLOBAL PARA ESTA TAREFA** ⚠️\n")
+		prompt.WriteString(taskCtx.TaskSpec)
+		prompt.WriteString("\n\n")
+	}
+
 	// Contexto de Negócio
 	prompt.WriteString("## 💼 Contexto de Negócio\n")
 	prompt.WriteString(taskCtx.PreviousContext["business_requirements"])
@@ -113,6 +135,26 @@ func (ca *ContextAssembler) BuildPromptForTask(taskCtx *TaskContext) string {
 	if taskCtx.KnowledgeContent != "" {
 		prompt.WriteString(taskCtx.KnowledgeContent)
 		prompt.WriteString("\n\n")
+	}
+
+	// DEPENDENCY MANIFEST (Opinionated Stack Builder)
+	if taskCtx.Stack != nil {
+		prompt.WriteString("## 📦 DEPENDENCY MANIFEST (Stack: " + taskCtx.Stack.Name + ")\n")
+		prompt.WriteString("Você DEVE utilizar as bibliotecas e frameworks abaixo para implementar esta tarefa.\n\n")
+
+		for _, lib := range taskCtx.Stack.Libraries {
+			mandatoryFlag := ""
+			if lib.Mandatory {
+				mandatoryFlag = " ⚠️ [ESTRITAMENTE OBRIGATÓRIO]"
+			}
+
+			prompt.WriteString(fmt.Sprintf("### Biblioteca: %s%s\n", lib.Name, mandatoryFlag))
+			prompt.WriteString(fmt.Sprintf("- **Categoria**: %s\n", lib.Category))
+			prompt.WriteString(fmt.Sprintf("- **Descrição**: %s\n", lib.Description))
+			prompt.WriteString(fmt.Sprintf("- **Comando de Instalação**: `%s`\n", lib.InstallCmd))
+			prompt.WriteString("- **Exemplo de Uso**:\n")
+			prompt.WriteString(fmt.Sprintf("```%s\n%s\n```\n\n", taskCtx.Stack.Language, lib.UsageExample))
+		}
 	}
 
 	// Tarefa Específica

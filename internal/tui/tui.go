@@ -238,7 +238,7 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if themeName == "dracula" {
 				UpdateStyles(theme.DefaultDracula())
 			} else {
-				t, err := theme.LoadTheme(filepath.Join("./themes", themeName+".json"))
+				t, err := theme.LoadTheme(filepath.Join(m.brain.GetThemesDir(), themeName+".json"))
 				if err == nil {
 					UpdateStyles(t)
 				}

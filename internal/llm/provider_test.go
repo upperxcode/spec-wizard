@@ -47,7 +47,10 @@ func TestURLNormalization(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			p := NewProvider(tt.provider, tt.baseURL, "key", "")
+			p, err := NewProvider(tt.provider, tt.baseURL, "key", "", true, false, nil)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
 			// We need to access the internal field, but since we are in the same package 'llm', we can.
 			// However, NewProvider returns the interface 'Provider'.
 			// We cast it to OpenAIProvider or OllamaProvider to check the BaseURL.
@@ -72,7 +75,10 @@ func TestOpenRouterConnection(t *testing.T) {
 		t.Skip("Pulei teste de conexão real: OPENROUTER_API_KEY não configurada")
 	}
 
-	provider := NewProvider("openrouter", "", apiKey, "OPENROUTER_API_KEY")
+	provider, err := NewProvider("openrouter", "", apiKey, "OPENROUTER_API_KEY", true, false, nil)
+	if err != nil {
+		t.Fatalf("Failed to create provider: %v", err)
+	}
 	client := NewLLMClient(provider, "openrouter/openrouter/free", nil)
 
 	ctx := context.Background()

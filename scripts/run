@@ -7,6 +7,7 @@ YELLOW='\033[1;33m'
 RED='\033[0;31m'
 NC='\033[0m' # No Color
 
+export LOG_ANALITIC=true
 PROJECT_ROOT=$(pwd)
 GO_SERVER_DIR="$PROJECT_ROOT"
 UI_DIR="$GO_SERVER_DIR/spec-wizard-ui"
@@ -17,13 +18,14 @@ function show_menu() {
     echo "-----------------------------------"
     echo -e "1) ${GREEN}Rodar Servidor Go (Dev)${NC}"
     echo -e "2) ${GREEN}Rodar Dashboard React (UI)${NC}"
-    echo -e "3) ${YELLOW}Build Servidor Go${NC}"
+    echo -e "3) ${YELLOW}Build & Install Global (~/.local/bin)${NC}"
     echo -e "4) ${BLUE}Rodar Testes de Unidade (Go)${NC}"
     echo -e "5) ${BLUE}Rodar Teste de Integração API${NC}"
-    echo -e "6) ${RED}Limpar Porta 8080 (Kill)${NC}"
+    echo -e "6) ${RED}Limpar Porta 10808 (Kill)${NC}"
     echo -e "7) ${GREEN}Rodar Tudo (Full Stack)${NC}"
-    echo -e "8) ${BLUE}Rodar TUI (Terminal)${NC}"
-    echo -e "9) ${RED}Sair${NC}"
+    echo -e "8) ${YELLOW}Build UI (Produção)${NC}"
+    echo -e "9) ${BLUE}Rodar TUI (Terminal)${NC}"
+    echo -e "10) ${RED}Sair${NC}"
     echo "-----------------------------------"
     read -p "Escolha uma opção [1-9]: " choice
     
@@ -35,8 +37,9 @@ function show_menu() {
         5) run_integration ;;
         6) clean_port 8080 ;;
         7) run_all ;;
-        8) run_tui ;;
-        9) exit 0 ;;
+        8) build_ui ;;
+        9) run_tui ;;
+        10) exit 0 ;;
         *) echo "Opção inválida"; sleep 1; show_menu ;;
     esac
 }
@@ -48,7 +51,18 @@ function run_tui() {
 }
 
 function clean_port() {
-    PORT=${1:-8080}
+    PORT=${1}
+    # Se porta não fornecida, tenta detectar do config.json
+    if [ -z "$PORT" ]; then
+        CONFIG_FILE="$HOME/.config/spec-wizard/config.json"
+        if [ -f "$CONFIG_FILE" ]; then
+            DETECTED_PORT=$(grep '"port":' "$CONFIG_FILE" | sed 's/.*"port": "\(.*\)".*/\1/')
+            PORT=${DETECTED_PORT:-10808}
+        else
+            PORT=10808
+        fi
+    fi
+
     echo -e "${YELLOW}🧹 Limpando porta $PORT...${NC}"
     PID=$(lsof -t -i:$PORT)
     if [ -n "$PID" ]; then
@@ -62,22 +76,45 @@ function clean_port() {
 
 function run_all() {
     echo -e "${BLUE}🌟 Iniciando Ecossistema Completo (Full Stack)...${NC}"
-    clean_port 8080
+    
+    # Tenta descobrir a porta do arquivo de configuração para limpar
+    CONFIG_FILE="$HOME/.config/spec-wizard/config.json"
+    API_PORT="10808" # fallback
+    if [ -f "$CONFIG_FILE" ]; then
+        DETECTED_PORT=$(grep '"port":' "$CONFIG_FILE" | sed 's/.*"port": "\(.*\)".*/\1/')
+        if [ -n "$DETECTED_PORT" ]; then
+            API_PORT=$DETECTED_PORT
+        fi
+    fi
+
+    clean_port $API_PORT
     clean_port 5173
     
-    echo -e "${GREEN}🚀 Servidor Go (Porta 8080)...${NC}"
+    echo -e "${GREEN}🚀 Servidor Go (Porta 10808)...${NC}"
+    build_and_install
     cd "$GO_SERVER_DIR" || exit
-    go run cmd/main.go --path "$PROJECT_ROOT" > "$PROJECT_ROOT/logs/server.log" 2>&1 &
+    go run cmd/main.go --path "$PROJECT_ROOT" --log "$PROJECT_ROOT/logs/server.log" &
     SERVER_PID=$!
     
     echo -e "${GREEN}🎨 Dashboard React (Porta 5173)...${NC}"
+    
+    # Tenta descobrir a porta do arquivo de configuração
+    CONFIG_FILE="$HOME/.config/spec-wizard/config.json"
+    API_PORT="10808" # fallback
+    if [ -f "$CONFIG_FILE" ]; then
+        DETECTED_PORT=$(grep '"port":' "$CONFIG_FILE" | sed 's/.*"port": "\(.*\)".*/\1/')
+        if [ -n "$DETECTED_PORT" ]; then
+            API_PORT=$DETECTED_PORT
+        fi
+    fi
+
     cd "$UI_DIR" || exit
-    npm run dev > "$PROJECT_ROOT/logs/ui.log" 2>&1 &
+    VITE_API_PORT=$API_PORT npm run dev > "$PROJECT_ROOT/logs/ui.log" 2>&1 &
     UI_PID=$!
     
     echo -e "-----------------------------------"
     echo -e "✅ ${GREEN}Sistema em execução!${NC}"
-    echo -e "- Backend: http://localhost:8080 (Log: logs/server.log)"
+    echo -e "- Backend: http://localhost:$API_PORT (Log: logs/server.log)"
     echo -e "- Frontend: http://localhost:5173 (Log: logs/ui.log)"
 
     echo "-----------------------------------"
@@ -88,29 +125,81 @@ function run_all() {
 }
 
 function run_server() {
-    if lsof -i :8080 > /dev/null; then
-        echo -e "${RED}❌ Porta 8080 está ocupada!${NC}"
+    if lsof -i :10808 > /dev/null; then
+        echo -e "${RED}❌ Porta 10808 está ocupada!${NC}"
         read -p "Deseja liberar a porta agora? (y/n): " clean_choice
         if [ "$clean_choice" == "y" ]; then
-            clean_port 8080
+            clean_port 10808
         fi
     fi
+    build_and_install
     echo -e "${GREEN}🚀 Iniciando Servidor Go...${NC}"
     cd "$GO_SERVER_DIR" || exit
-    go run cmd/main.go --path "$PROJECT_ROOT"
+    # Direciona log para pasta local para visibilidade do desenvolvedor
+    go run cmd/main.go --path "$PROJECT_ROOT" --log "$PROJECT_ROOT/logs/server.log"
 }
 
 function run_ui() {
     echo -e "${GREEN}🎨 Iniciando Dashboard React...${NC}"
+    
+    # Tenta descobrir a porta do arquivo de configuração
+    CONFIG_FILE="$HOME/.config/spec-wizard/config.json"
+    API_PORT="10808" # fallback
+    if [ -f "$CONFIG_FILE" ]; then
+        DETECTED_PORT=$(grep '"port":' "$CONFIG_FILE" | sed 's/.*"port": "\(.*\)".*/\1/')
+        if [ -n "$DETECTED_PORT" ]; then
+            API_PORT=$DETECTED_PORT
+            echo -e "📡 API detectada na porta: ${BLUE}$API_PORT${NC}"
+        fi
+    fi
+
     cd "$UI_DIR" || exit
-    npm run dev
+    VITE_API_PORT=$API_PORT npm run dev
+}
+
+function build_ui() {
+    echo -e "${YELLOW}📦 Gerando Build de Produção da UI...${NC}"
+    cd "$UI_DIR" || exit
+    npm run build
+    
+    # Sincroniza com o diretório de recursos global (~/.spec-wizard/ui)
+    TARGET_UI_DIR="$HOME/.spec-wizard/ui"
+    echo -e "${BLUE}🚚 Sincronizando UI com $TARGET_UI_DIR...${NC}"
+    mkdir -p "$TARGET_UI_DIR"
+    cp -r dist/* "$TARGET_UI_DIR/"
+    
+    echo -e "${GREEN}✅ UI Compilada e Instalada em $TARGET_UI_DIR!${NC}"
+}
+
+function build_and_install() {
+    # Sempre compila a UI primeiro para garantir que as mudanças visuais entrem no binário
+    build_ui
+    echo -e "${YELLOW}🏗️ Compilando e Instalando Globalmente...${NC}"
+    cd "$GO_SERVER_DIR" || exit
+    go build -o server cmd/main.go
+    # Garante que o diretório existe e instala no path do usuário
+    mkdir -p "$HOME/.local/bin"
+    cp server "$HOME/.local/bin/spec-wizard"
+    echo -e "${GREEN}✅ Build e Instalação concluídos!${NC}"
+    echo -e "📍 Global: ${BLUE}$HOME/.local/bin/spec-wizard${NC}"
+    sync_experts
+}
+
+function sync_experts() {
+    echo -e "${YELLOW}🔄 Sincronizando Experts e Scripts...${NC}"
+    TARGET_DIR="$HOME/.spec-wizard"
+    mkdir -p "$TARGET_DIR/scripts"
+    mkdir -p "$TARGET_DIR/logs"
+    
+    cp config/experts.yaml "$TARGET_DIR/experts.yaml"
+    cp scripts/*.py "$TARGET_DIR/scripts/"
+    chmod +x "$TARGET_DIR/scripts/"*.py
+    
+    echo -e "${GREEN}✅ Experts sincronizados em $TARGET_DIR${NC}"
 }
 
 function build_server() {
-    echo -e "${YELLOW}🏗️ Compilando Servidor Go...${NC}"
-    cd "$GO_SERVER_DIR" || exit
-    go build -o server cmd/main.go
-    echo -e "${GREEN}✅ Build concluído: $GO_SERVER_DIR/server${NC}"
+    build_and_install
 }
 
 function run_tests() {
@@ -123,12 +212,12 @@ function run_integration() {
     echo -e "${BLUE}🔗 Rodando Teste de Integração...${NC}"
     cd "$GO_SERVER_DIR" || exit
     # Garante que o servidor de teste está rodando ou avisa
-    if ! lsof -i :8080 > /dev/null; then
-        echo -e "${YELLOW}⚠️ Aviso: O servidor precisa estar rodando na porta 8080 para este teste.${NC}"
+    if ! lsof -i :10808 > /dev/null; then
+        echo -e "${YELLOW}⚠️ Aviso: O servidor precisa estar rodando na porta 10808 para este teste.${NC}"
         echo "Deseja iniciar o servidor em background agora? (y/n)"
         read -r start_server
         if [ "$start_server" == "y" ]; then
-            go run cmd/main.go > /dev/null 2>&1 &
+            go run cmd/main.go --path "$PROJECT_ROOT" --log "$PROJECT_ROOT/logs/server.log" > /dev/null 2>&1 &
             SERVER_PID=$!
             sleep 2
         fi
@@ -137,6 +226,27 @@ function run_integration() {
     if [ -n "$SERVER_PID" ]; then
         kill "$SERVER_PID"
     fi
+}
+
+function show_help() {
+    echo -e "${BLUE}🧙‍♂️ Spec Wizard - Manual de Comandos${NC}"
+    echo "--------------------------------------------------"
+    echo -e "Uso: ./scripts/run [OPÇÃO]"
+    echo ""
+    echo "Opções Disponíveis:"
+    echo -e "  ${GREEN}server | dev${NC}    Inicia o servidor backend Go (servindo a UI)"
+    echo -e "  ${GREEN}ui${NC}              Inicia apenas o servidor de desenvolvimento React (Vite)"
+    echo -e "  ${GREEN}tui${NC}             Inicia a interface de terminal interativa"
+    echo -e "  ${GREEN}all${NC}             Inicia tanto o servidor Go quanto a UI React"
+    echo -e "  ${GREEN}build${NC}           Build completo: UI + Backend + Instalação Global"
+    echo -e "  ${GREEN}build-ui${NC}        Gera apenas o build de produção da UI (pasta dist)"
+    echo -e "  ${GREEN}test${NC}            Executa a suíte de testes unitários"
+    echo -e "  ${GREEN}integration${NC}     Executa os testes de integração de ponta a ponta"
+    echo -e "  ${GREEN}clean [PORTA]${NC}   Libera a porta especificada (padrão 10808)"
+    echo -e "  ${GREEN}help | --help${NC}   Exibe este manual de ajuda"
+    echo ""
+    echo "Se nenhuma opção for fornecida, o menu interativo será exibido."
+    echo "--------------------------------------------------"
 }
 
 # CLI Argument parsing
@@ -150,15 +260,13 @@ else
         "all") run_all ;;
         "build") build_server ;;
         "test") run_tests ;;
+        "build-ui") build_ui ;;
         "integration") run_integration ;;
-        "clean") clean_port ${2:-8080} ;;
-        "help")
-            echo "Uso: ./scripts/run [comando]"
-            echo "Comandos disponíveis: server, ui, tui, all, build, test, integration, clean"
-            ;;
+        "clean") clean_port ${2:-10808} ;;
+        "help"|"--help"|"-h") show_help ;;
         *)
             echo -e "${RED}Erro: Comando desconhecido '$1'${NC}"
-            echo "Use './scripts/run help' para ver as opções."
+            echo "Use './scripts/run --help' para ver as opções."
             exit 1
             ;;
     esac

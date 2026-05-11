@@ -16,7 +16,7 @@ type ExpertClient struct {
 
 func NewExpertClient() *ExpertClient {
 	return &ExpertClient{
-		HTTPClient: &http.Client{Timeout: 30 * time.Second},
+		HTTPClient: &http.Client{Timeout: 600 * time.Second},
 	}
 }
 
@@ -30,12 +30,7 @@ type RequestPayload struct {
 func (c *ExpertClient) CallExpert(plugin *registry.ExpertPlugin, action string, data interface{}) (map[string]interface{}, error) {
 	url := fmt.Sprintf("%s/%s", plugin.Endpoint, action)
 
-	payload := RequestPayload{
-		Action: action,
-		Data:   data,
-	}
-
-	jsonData, err := json.Marshal(payload)
+	jsonData, err := json.Marshal(data)
 	if err != nil {
 		return nil, fmt.Errorf("erro ao serializar payload: %v", err)
 	}

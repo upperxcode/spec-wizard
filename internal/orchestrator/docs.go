@@ -5,8 +5,11 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"spec-wizard/internal/logger"
 	"spec-wizard/internal/patterns"
+	"spec-wizard/internal/prompt"
 	"strings"
+	"time"
 )
 
 // GeneratePRD generates the content of PRD.md (Requirements and Domain)
@@ -35,6 +38,19 @@ func GenerateSPEC(config ProjectConfig, allRules map[string][]string) string {
 	sb.WriteString(fmt.Sprintf("- **Data Strategy**: %s\n", config.DataStrategy))
 	sb.WriteString(fmt.Sprintf("- **State Management**: %s\n", config.StateManagement))
 	sb.WriteString(fmt.Sprintf("- **API Contract**: %s\n\n", config.ApiContract))
+
+	if config.Stack != nil {
+		sb.WriteString("## 📦 Opinionated Stack\n")
+		sb.WriteString(fmt.Sprintf("- **Template**: %s\n", config.Stack.Name))
+		for _, lib := range config.Stack.Libraries {
+			mandatory := ""
+			if lib.Mandatory {
+				mandatory = " (Obrigatório)"
+			}
+			sb.WriteString(fmt.Sprintf("- %s: %s%s\n", lib.Category, lib.Name, mandatory))
+		}
+		sb.WriteString("\n")
+	}
 
 	sb.WriteString("## 📂 Patterns & Standards\n")
 	for _, p := range config.Patterns {
@@ -135,7 +151,11 @@ func GenerateRoadmapMarkdown(rawRoadmap interface{}) string {
 	}
 
 	var sb strings.Builder
-	sb.WriteString("# 🗺️ STRATEGIC EXECUTION ROADMAP\n\n")
+	title := "🗺️ STRATEGIC EXECUTION ROADMAP"
+	if roadmap.ProjectName != "" {
+		title = fmt.Sprintf("🗺️ ROADMAP: %s", roadmap.ProjectName)
+	}
+	sb.WriteString("# " + title + "\n\n")
 	sb.WriteString("> This document details the development phases and the current progress of the system.\n\n")
 
 	sb.WriteString(fmt.Sprintf("- **Language**: %s\n", roadmap.Language))
@@ -178,6 +198,9 @@ func GenerateRoadmapMarkdown(rawRoadmap interface{}) string {
 
 // SaveAgentsDocs persiste toda a documentação em .spec-wizard/
 func (o *Orchestrator) SaveAgentsDocs(config ProjectConfig, patternRepo *patterns.PatternRepository) error {
+	// Feedback visual de segurança para o usuário
+	fmt.Printf("💾 [ORQUESTRADOR] Salvando Snapshot de Segurança para: %s\n", config.ProjectName)
+
 	wizardPath := filepath.Join(o.ProjectPath, ".spec-wizard")
 	os.MkdirAll(filepath.Join(wizardPath, "wiki"), 0755)
 	os.MkdirAll(filepath.Join(wizardPath, "task-logs"), 0755)
@@ -187,8 +210,47 @@ func (o *Orchestrator) SaveAgentsDocs(config ProjectConfig, patternRepo *pattern
 		allRules = patternRepo.GetMultiplePatternRules(config.Language, config.Patterns)
 	}
 
+	// Smart Merge: Se já existir um config.json, preserve campos que não vieram na nova config
+	// Isso evita perda de dados por cliques acidentais no Dashboard ou falhas na UI
+	existingPath := filepath.Join(wizardPath, "config.json")
+	if data, err := os.ReadFile(existingPath); err == nil {
+		var oldConfig ProjectConfig
+		if err := json.Unmarshal(data, &oldConfig); err == nil {
+			if config.Instructions == "" {
+				config.Instructions = oldConfig.Instructions
+			}
+			if config.Domain == "" {
+				config.Domain = oldConfig.Domain
+			}
+			if config.FunctionalRequirements == "" {
+				config.FunctionalRequirements = oldConfig.FunctionalRequirements
+			}
+			if config.NonFunctionalRequirements == "" {
+				config.NonFunctionalRequirements = oldConfig.NonFunctionalRequirements
+			}
+			if config.DataStrategy == "" {
+				config.DataStrategy = oldConfig.DataStrategy
+			}
+			if config.ApiContract == "" {
+				config.ApiContract = oldConfig.ApiContract
+			}
+			if config.Customization == "" {
+				config.Customization = oldConfig.Customization
+			}
+			if config.Stack == nil || config.Stack.ID == "" {
+				config.Stack = oldConfig.Stack
+			}
+			if config.Roadmap == nil {
+				config.Roadmap = oldConfig.Roadmap
+			}
+			if config.ProjectName == "" {
+				config.ProjectName = oldConfig.ProjectName
+			}
+		}
+	}
+
 	configData, _ := json.MarshalIndent(config, "", "  ")
-	os.WriteFile(filepath.Join(wizardPath, "config.json"), configData, 0644)
+	os.WriteFile(existingPath, configData, 0644)
 
 	os.WriteFile(filepath.Join(wizardPath, "PRD.md"), []byte(GeneratePRD(config)), 0644)
 	os.WriteFile(filepath.Join(wizardPath, "SPEC.md"), []byte(GenerateSPEC(config, allRules)), 0644)
@@ -203,9 +265,15 @@ func (o *Orchestrator) SaveAgentsDocs(config ProjectConfig, patternRepo *pattern
 		os.WriteFile(filepath.Join(wizardPath, "roadmap.md"), []byte(roadmapMD), 0644)
 	}
 
-	// Limpeza legada
-	os.Remove(filepath.Join(wizardPath, "project_config.json"))
-	os.Remove(filepath.Join(wizardPath, "sprints.json"))
+	if config.Stack != nil {
+		stackData, _ := json.MarshalIndent(config.Stack, "", "  ")
+		os.WriteFile(filepath.Join(wizardPath, "stack.json"), stackData, 0644)
+	}
+
+	// Persiste snapshot incremental se houver Roadmap
+	if config.Roadmap != nil && o.SnapshotMgr != nil {
+		o.SnapshotMgr.SaveSnapshot(config.ProjectName, "GLOBAL", "USER_SAVE", config.Roadmap)
+	}
 
 	return nil
 }
@@ -250,11 +318,132 @@ func isEmpty(val interface{}) bool {
 	}
 	switch v := val.(type) {
 	case string:
-		return v == "" || v == "custom" || v == "Domínio não identificado"
+		v = strings.ToLower(strings.TrimSpace(v))
+		return v == "" || v == "custom" || v == "domínio não identificado" || v == "unknown go project" || v == "yourmodule"
 	case []interface{}:
 		return len(v) == 0
 	case []string:
 		return len(v) == 0
 	}
 	return false
+}
+
+func (o *Orchestrator) BootstrapTaskSpec(config ProjectConfig, sprintID, taskID string) (string, error) {
+	// Recuperação de pânico para evitar erro 500 silencioso
+	defer func() {
+		if r := recover(); r != nil {
+			logger.Error("🔥 [BootstrapTaskSpec] CRITICAL PANIC", fmt.Errorf("%v", r))
+		}
+	}()
+
+	logger.Info("🏗️  [BootstrapTaskSpec] Iniciando geração de SPEC para tarefa", "taskID", taskID, "sprintID", sprintID)
+
+	// 1. Tenta carregar o roadmap (sprints.json ou memória)
+	var roadmap ProjectRoadmap
+	sprintsPath := filepath.Join(o.ProjectPath, ".spec-wizard", "sprints.json")
+
+	foundRoadmap := false
+	if data, err := os.ReadFile(sprintsPath); err == nil {
+		if err := json.Unmarshal(data, &roadmap); err == nil {
+			foundRoadmap = true
+		} else {
+			logger.Warn("⚠️ [BootstrapTaskSpec] Erro ao ler sprints.json, tentando fallback", "error", err)
+		}
+	}
+
+	if !foundRoadmap && config.Roadmap != nil {
+		logger.Info("ℹ️ [BootstrapTaskSpec] Usando roadmap da memória")
+		roadmapData, _ := json.Marshal(config.Roadmap)
+		if err := json.Unmarshal(roadmapData, &roadmap); err != nil {
+			return "", fmt.Errorf("erro ao processar roadmap da configuração: %v", err)
+		}
+		foundRoadmap = true
+	}
+
+	if !foundRoadmap {
+		return "", fmt.Errorf("roadmap estratégico não encontrado. Gere o plano estratégico primeiro")
+	}
+
+	var targetTask *Task
+	var targetSprint *Sprint
+	for i := range roadmap.Sprints {
+		if string(roadmap.Sprints[i].ID) == sprintID {
+			targetSprint = &roadmap.Sprints[i]
+			for j := range roadmap.Sprints[i].Tasks {
+				if string(roadmap.Sprints[i].Tasks[j].ID) == taskID {
+					targetTask = &roadmap.Sprints[i].Tasks[j]
+					break
+				}
+			}
+		}
+	}
+
+	if targetTask == nil {
+		return "", fmt.Errorf("tarefa %s não encontrada na sprint %s", taskID, sprintID)
+	}
+
+	// 2. Carrega SPEC Global para contexto
+	globalSpec, _ := o.readProjectDoc(o.ProjectPath, "SPEC.md")
+
+	// 3. Prepara contexto para o prompt factory
+	factory := prompt.NewPromptFactory()
+	bootstrapPrompt := factory.GenerateTaskSpecBootstrap(prompt.ExecutionContext{
+		ProjectName:        config.ProjectName,
+		Architecture:       config.Architecture,
+		Language:           config.Language,
+		Summary:            globalSpec,
+		SprintGoal:         targetSprint.Goal,
+		TaskTitle:          targetTask.Title,
+		TaskDescription:    targetTask.Description,
+		AcceptanceCriteria: targetTask.GetCriteriaStrings(),
+	})
+
+	// LOG DO PROMPT (Resumo para o log não ficar gigante)
+	promptPreview := bootstrapPrompt
+	if len(promptPreview) > 500 {
+		promptPreview = promptPreview[:500] + "..."
+	}
+	logger.Info("📡 [BootstrapTaskSpec] Prompt gerado para IA", "preview", promptPreview)
+
+	// 4. Chama a IA
+	llmClient, err := o.GetLLMClient(config)
+	if err != nil {
+		return "", fmt.Errorf("falha ao obter cliente LLM: %v", err)
+	}
+
+	logger.Info("⏳ [BootstrapTaskSpec] Aguardando resposta da IA (LM Studio/OpenAI)...")
+	startTime := time.Now()
+	rawResponse, err := llmClient.Ask(bootstrapPrompt)
+	duration := time.Since(startTime)
+
+	if err != nil {
+		logger.Error("❌ [BootstrapTaskSpec] Erro na chamada da IA", err, "duration", duration.String())
+		return "", fmt.Errorf("IA falhou após %s: %v", duration.String(), err)
+	}
+
+	logger.Info("✅ [BootstrapTaskSpec] IA respondeu com sucesso", "duration", duration.String(), "chars", len(rawResponse))
+
+	// 5. Salva a spec gerada
+	tasksDir := filepath.Join(o.ProjectPath, ".spec-wizard", "tasks")
+	os.MkdirAll(tasksDir, 0755)
+	specPath := filepath.Join(tasksDir, fmt.Sprintf("task-%s.md", taskID))
+
+	err = os.WriteFile(specPath, []byte(rawResponse), 0644)
+	if err != nil {
+		logger.Error("❌ [BootstrapTaskSpec] Erro ao salvar arquivo da tarefa", err, "path", specPath)
+		return "", fmt.Errorf("erro ao salvar SPEC da tarefa: %v", err)
+	}
+
+	return rawResponse, nil
+}
+
+func toSnakeCase(s string) string {
+	var res strings.Builder
+	for i, r := range s {
+		if i > 0 && r >= 'A' && r <= 'Z' {
+			res.WriteByte('_')
+		}
+		res.WriteRune(r)
+	}
+	return strings.ToLower(res.String())
 }

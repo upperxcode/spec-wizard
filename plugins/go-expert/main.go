@@ -20,12 +20,16 @@ type AnalysisResponse struct {
 }
 
 func main() {
-	http.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
+	mux := http.NewServeMux()
+
+	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		fmt.Fprintln(w, "OK")
 	})
-	http.HandleFunc("/AnalyzeCodebase", handleAnalyze)
-	http.HandleFunc("/Format", handleFormat)
+
+	mux.HandleFunc("/options", handleOptions)
+	mux.HandleFunc("/AnalyzeCodebase", handleAnalyze)
+	mux.HandleFunc("/Format", handleFormat)
 
 	port := "8083"
 	if len(os.Args) > 1 {
@@ -33,7 +37,15 @@ func main() {
 	}
 
 	fmt.Printf("🚀 Go Expert ativo na porta %s\n", port)
-	http.ListenAndServe(":"+port, nil)
+
+	server := &http.Server{
+		Addr:    ":" + port,
+		Handler: mux,
+	}
+
+	if err := server.ListenAndServe(); err != nil {
+		fmt.Printf("❌ Erro ao iniciar servidor: %v\n", err)
+	}
 }
 
 type FormatRequest struct {
@@ -57,17 +69,9 @@ func handleFormat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Tenta UCF primeiro (Universal Code Formatter) por ser mais rápido
-	cmd := exec.Command("ucf")
+	cmd := exec.Command("gofmt")
 	cmd.Stdin = strings.NewReader(req.Code)
 	output, err := cmd.CombinedOutput()
-
-	// Fallback para gofmt se ucf falhar ou não estiver instalado
-	if err != nil {
-		cmd = exec.Command("gofmt")
-		cmd.Stdin = strings.NewReader(req.Code)
-		output, err = cmd.CombinedOutput()
-	}
 
 	resp := FormatResponse{
 		FormattedCode: string(output),
@@ -80,13 +84,46 @@ func handleFormat(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(resp)
 }
 
+func handleOptions(w http.ResponseWriter, r *http.Request) {
+	options := map[string]interface{}{
+		"architectures": []map[string]interface{}{
+			{"id": "clean_arch", "name": "Clean Architecture", "description": "Uso de camadas: cmd, internal/domain, internal/platform"},
+			{"id": "flat_arch", "name": "Flat (Standard)", "description": "Pacote único ou estruturado por funcionalidade na raiz"},
+		},
+		"stack_templates": []map[string]interface{}{
+			{
+				"id":   "go_backend",
+				"name": "Go Backend (Gin/Sqlx)",
+				"libraries": []map[string]interface{}{
+					{"name": "github.com/gin-gonic/gin", "mandatory": true, "usage_example": "r := gin.Default()\nr.GET(\"/api/v1/resource\", handler)\nr.Run()"},
+					{"name": "github.com/jmoiron/sqlx", "mandatory": true, "usage_example": "var items []Item\nerr := db.Select(&items, \"SELECT * FROM items WHERE status = ?\", \"active\")"},
+				},
+			},
+			{
+				"id":   "go_cli_service",
+				"name": "Go CLI Service (Cobra/Zap/Viper)",
+				"libraries": []map[string]interface{}{
+					{"name": "github.com/spf13/cobra", "mandatory": true, "usage_example": "rootCmd.Execute()"},
+					{"name": "go.uber.org/zap", "mandatory": true, "usage_example": "logger, _ := zap.NewProduction()\nlogger.Info(\"serviço iniciado\")"},
+					{"name": "github.com/spf13/viper", "mandatory": true, "usage_example": "viper.ReadInConfig()"},
+					{"name": "github.com/stretchr/testify/assert", "mandatory": false, "usage_example": "assert.NoError(t, err)"},
+				},
+			},
+		},
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	if err := json.NewEncoder(w).Encode(options); err != nil {
+		fmt.Printf("❌ Erro ao codificar opções: %v\n", err)
+	}
+}
+
 func handleAnalyze(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "Método não permitido", http.StatusMethodNotAllowed)
 		return
 	}
 
-	// Envelope padrão do Servidor
 	var envelope struct {
 		Action string `json:"action"`
 		Data   struct {
@@ -96,8 +133,6 @@ func handleAnalyze(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := json.NewDecoder(r.Body).Decode(&envelope); err != nil {
-		// Fallback para decodificação direta se não houver envelope
-		r.Body = os.Stdin // dummy reset (não funciona bem com decoder)
 		http.Error(w, "Erro ao decodificar JSON (Envelope)", http.StatusBadRequest)
 		return
 	}
@@ -105,16 +140,13 @@ func handleAnalyze(w http.ResponseWriter, r *http.Request) {
 	goModData := envelope.Data.Data
 	projectPath := envelope.Data.ProjectPath
 
-	// Se recebemos o path, tentamos ler o go.mod localmente
 	if projectPath != "" && goModData == "" {
-		// Garante path absoluto se necessário
 		content, err := os.ReadFile(projectPath + "/go.mod")
 		if err == nil {
 			goModData = string(content)
 		}
 	}
 
-	// Análise simplificada do go.mod
 	projectName := "Unknown Go Project"
 	libs := []string{}
 	projectType := "Web Service / CLI"

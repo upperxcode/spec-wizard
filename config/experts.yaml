@@ -1,7 +1,7 @@
 experts:
   - id: "flutter-expert"
     language: "flutter"
-    start_command: "cd plugins/flutter-expert-python && source venv/bin/activate && python main.py"
+    start_command: "cd plugins/flutter-expert && ./expert"
     triggers:
       - "pubspec.yaml"
   - id: "go-expert"
@@ -9,3 +9,16 @@ experts:
     start_command: "cd plugins/go-expert && ./expert"
     triggers:
       - "go.mod"
+    test_config:
+      command: "go test ./..."
+      fail_prompt: "Os testes de Go falharam. Analise a saída do erro abaixo e os arquivos envolvidos para identificar a causa raiz. Foque em erros de sintaxe, tipos ou falhas de asserção lógica."
+  - id: "crush"
+    language: "agnostic"
+    start_command: "python3 scripts/crush_expert.py"
+    triggers:
+      - ".crush"
+  - id: "gemini"
+    language: "agnostic"
+    start_command: "python3 scripts/gemini_expert.py"
+    triggers:
+      - ".gemini"

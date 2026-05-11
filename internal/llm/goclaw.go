@@ -3,34 +3,74 @@ package llm
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"spec-wizard/internal/logger"
 	"strings"
 
 	"github.com/nextlevelbuilder/goclaw/pkg/providers"
+	"sync"
 )
+
+var (
+	endpointLocks = make(map[string]*sync.Mutex)
+	locksMu       sync.Mutex
+)
+
+func getEndpointLock(url string) *sync.Mutex {
+	locksMu.Lock()
+	defer locksMu.Unlock()
+	
+	// Normaliza a URL para chave do mapa
+	key := strings.TrimRight(strings.ToLower(url), "/")
+	if l, ok := endpointLocks[key]; ok {
+		return l
+	}
+	l := &sync.Mutex{}
+	endpointLocks[key] = l
+	return l
+}
 
 // GoclawProvider implements the llm.Provider interface using the goclaw engine.
 type GoclawProvider struct {
-	provider providers.Provider
+	provider   providers.Provider
+	name       string
+	baseURL    string
+	mu         *sync.Mutex
+	sequential bool
 }
 
-func NewGoclawProvider(name, baseURL, apiKey, defaultModel string) (*GoclawProvider, error) {
+func NewGoclawProvider(name, baseURL, apiKey, defaultModel string, sequential bool) (*GoclawProvider, error) {
 	var p providers.Provider
 
-	switch strings.ToLower(name) {
+	nameLower := strings.ToLower(name)
+	switch nameLower {
 	case "anthropic":
 		p = providers.NewAnthropicProvider(apiKey,
 			providers.WithAnthropicBaseURL(baseURL),
 			providers.WithAnthropicModel(defaultModel),
-			providers.WithAnthropicName(name),
+			providers.WithAnthropicName(nameLower),
 		)
-	case "openai", "lmstudio", "openrouter", "deepseek":
-		p = providers.NewOpenAIProvider(name, apiKey, baseURL, defaultModel)
+	case "openai", "lmstudio", "deepseek":
+		p = providers.NewOpenAIProvider(nameLower, apiKey, baseURL, defaultModel)
+	case "openrouter":
+		op := providers.NewOpenAIProvider(nameLower, apiKey, baseURL, defaultModel)
+		// OpenRouter requer headers de identificação para alguns modelos e rankings
+		op.WithSiteInfo("https://github.com/upperxcode/spec-wizard", "Spec Wizard")
+		p = op
 	default:
-		p = providers.NewOpenAIProvider(name, apiKey, baseURL, defaultModel)
+		p = providers.NewOpenAIProvider(nameLower, apiKey, baseURL, defaultModel)
 	}
 
-	return &GoclawProvider{provider: p}, nil
+	logger.Debug("🔌 [Goclaw] Provedor instanciado", "name", nameLower, "baseURL", baseURL)
+
+	return &GoclawProvider{
+		provider:   p,
+		name:       nameLower,
+		baseURL:    baseURL,
+		mu:         getEndpointLock(baseURL),
+		sequential: sequential,
+	}, nil
 }
 
 func (p *GoclawProvider) Name() string {
@@ -104,8 +144,19 @@ func (p *GoclawProvider) Chat(ctx context.Context, model string, messages []Mess
 
 	logger.Info("⏳ [Goclaw] Aguardando resposta do provedor...", "model", model)
 
-	// 4. Executa o Chat
-	resp, err := p.provider.Chat(ctx, req)
+	// 4. Executa o Chat com Proteção de Fila Opcional (Lock)
+	var resp *providers.ChatResponse
+	var err error
+	if p.sequential {
+		func() {
+			p.mu.Lock()
+			defer p.mu.Unlock()
+			resp, err = p.provider.Chat(ctx, req)
+		}()
+	} else {
+		resp, err = p.provider.Chat(ctx, req)
+	}
+
 	if err != nil {
 		logger.Error("❌ [Goclaw] Falha na requisição", err)
 		return nil, err
@@ -114,7 +165,12 @@ func (p *GoclawProvider) Chat(ctx context.Context, model string, messages []Mess
 	logger.Debug("✅ [Goclaw] Resposta recebida", "content_length", len(resp.Content))
 
 	if len(resp.Content) == 0 && len(resp.ToolCalls) == 0 {
-		logger.Info("⚠️ [Goclaw] Resposta da IA veio totalmente vazia (sem conteúdo e sem ferramentas)")
+		msg := "a IA retornou uma resposta vazia"
+		if p.name == "lmstudio" || p.name == "ollama" {
+			msg = fmt.Sprintf("a IA (%s) retornou uma resposta vazia. Verifique se o modelo está carregado no provedor e se a URL (%s) está correta.", p.name, p.baseURL)
+		}
+		logger.Warn("⚠️ [Goclaw] " + msg)
+		return nil, errors.New(msg)
 	}
 
 	// 5. Converte resposta de volta
@@ -134,14 +190,19 @@ func (p *GoclawProvider) Chat(ctx context.Context, model string, messages []Mess
 		})
 	}
 
-	return &Response{
+	response := &Response{
 		Role:      "assistant",
 		Content:   resp.Content,
 		ToolCalls: toolCalls,
-		Usage: Usage{
+	}
+
+	if resp.Usage != nil {
+		response.Usage = Usage{
 			PromptTokens:     resp.Usage.PromptTokens,
 			CompletionTokens: resp.Usage.CompletionTokens,
 			TotalTokens:      resp.Usage.TotalTokens,
-		},
-	}, nil
+		}
+	}
+
+	return response, nil
 }

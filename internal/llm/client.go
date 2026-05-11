@@ -7,6 +7,7 @@ import (
 	"os"
 	"spec-wizard/internal/analytic"
 	"spec-wizard/internal/logger"
+	"spec-wizard/internal/registry"
 	adatools "spec-wizard/tools"
 	"strings"
 	"time"
@@ -43,82 +44,153 @@ func NewLLMClient(provider Provider, model string, registry any) *LLMClient {
 	return &LLMClient{
 		Provider: provider,
 		Model:    model,
-		Timeout:  240 * time.Second,
+		Timeout:  300 * time.Second,
 		Registry: reg,
 	}
 }
 
 // NewProvider is a factory for LLM providers
-func NewProvider(name, baseURL, apiKey, envKey string) Provider {
+func NewProvider(name, baseURL, apiKey, envKey string, sequential bool, useCLI bool, plugins []*registry.ExpertPlugin) (Provider, error) {
+	logger.Info("🔍 [LLM] NewProvider chamado", "name", name, "baseURL", baseURL, "envKey", envKey, "useCLI", useCLI)
+
+	// 0. Se UseCLI estiver ativo, usamos o ExpertProvider
+	if useCLI {
+		expertID := resolveExpertID(name)
+		logger.Info("🚀 [LLM] Modo CLI Ativado", "expertID", expertID)
+		return NewExpertProvider(expertID, plugins), nil
+	}
+
 	// 1. Fallbacks de URL padrão se estiver vazio
+	nameLower := strings.ToLower(strings.TrimSpace(name))
 	if baseURL == "" {
-		switch name {
+		switch nameLower {
 		case "openai":
 			baseURL = "https://api.openai.com/v1"
 		case "ollama":
 			baseURL = "http://localhost:11434"
 		case "openrouter":
 			baseURL = "https://openrouter.ai/api/v1"
-		}
-	}
-
-	// 2. Normalizações específicas (ex: OpenRouter precisa de /v1)
-	if name == "openrouter" {
-		if baseURL == "https://openrouter.ai/api" {
-			baseURL = "https://openrouter.ai/api/v1"
-		}
-		if !strings.HasSuffix(baseURL, "/v1") && !strings.HasSuffix(baseURL, "/v1/") {
-			if strings.HasSuffix(baseURL, "/api") {
-				baseURL += "/v1"
-			} else if !strings.Contains(baseURL, "/v1") {
-				baseURL = strings.TrimSuffix(baseURL, "/") + "/v1"
+		case "lmstudio":
+			if baseURL == "" {
+				baseURL = "http://localhost:1234/v1"
 			}
 		}
 	}
 
+	// 1.1. Especial para LM Studio: garantir /v1 se for local e não tiver
+	if nameLower == "lmstudio" && !strings.HasSuffix(baseURL, "/v1") && !strings.HasSuffix(baseURL, "/v1/") {
+		logger.Warn("⚠️ [LLM] URL do LM Studio parece incompleta. Adicionando '/v1' automaticamente.", "old", baseURL)
+		baseURL = strings.TrimSuffix(baseURL, "/") + "/v1"
+	}
+
+	// 2. Validação básica de URL
+	baseURL = strings.TrimSpace(baseURL)
+	baseURL = strings.TrimSuffix(baseURL, "/")
+
 	// 3. Busca API Key em variáveis de ambiente se estiver vazia
+	apiKey = strings.TrimSpace(apiKey)
+	envKey = strings.TrimSpace(envKey)
+
 	if apiKey == "" {
+		logger.Info("🔑 [LLM] API Key vazia, tentando resolver via ambiente...", "provider", name)
+
 		// 3.1. Tenta pela chave de ambiente configurada
 		if envKey != "" {
 			apiKey = os.Getenv(envKey)
+			if apiKey != "" {
+				apiKey = strings.Trim(strings.TrimSpace(apiKey), `"'`)
+				masked := ""
+				if len(apiKey) > 8 {
+					masked = apiKey[:4] + "..." + apiKey[len(apiKey)-4:]
+				}
+				logger.Info("✅ [LLM] API Key resolvida via variável configurada", "envKey", envKey, "key", masked, "len", len(apiKey))
+			} else {
+				logger.Warn("❌ [LLM] Variável de ambiente configurada está vazia", "envKey", envKey)
+			}
 		}
 
 		// 3.2. Fallbacks automáticos se ainda estiver vazia
 		if apiKey == "" {
-			switch name {
+			var fallbackKey string
+			switch nameLower {
 			case "openai":
-				apiKey = os.Getenv("OPENAI_API_KEY")
+				fallbackKey = "OPENAI_API_KEY"
 			case "anthropic":
-				apiKey = os.Getenv("ANTHROPIC_API_KEY")
+				fallbackKey = "ANTHROPIC_API_KEY"
 			case "gemini":
-				apiKey = os.Getenv("GEMINI_API_KEY")
+				fallbackKey = "GEMINI_API_KEY"
 			case "openrouter":
-				apiKey = os.Getenv("OPENROUTER_API_KEY")
+				fallbackKey = "OPENROUTER_API_KEY"
 			}
+
+			if fallbackKey != "" {
+				apiKey = os.Getenv(fallbackKey)
+				if apiKey != "" {
+					apiKey = strings.Trim(strings.TrimSpace(apiKey), `"'`)
+					masked := ""
+					if len(apiKey) > 8 {
+						masked = apiKey[:4] + "..." + apiKey[len(apiKey)-4:]
+					}
+					logger.Info("✅ [LLM] API Key resolvida via fallback padrão", "fallbackKey", fallbackKey, "key", masked, "len", len(apiKey))
+				} else {
+					logger.Warn("❌ [LLM] Fallback padrão de ambiente está vazio", "fallbackKey", fallbackKey)
+				}
+			}
+		}
+	} else {
+		logger.Info("🔑 [LLM] Usando API Key da configuração", "provider", nameLower, "key", maskKey(apiKey), "len", len(apiKey))
+	}
+
+	if apiKey == "" && envKey != "" {
+		apiKey = os.Getenv(envKey)
+		if apiKey != "" {
+			logger.Info("✅ [LLM] API Key resolvida via variável de ambiente", "envKey", envKey, "key", maskKey(apiKey), "len", len(apiKey))
+		} else {
+			logger.Warn("⚠️ [LLM] Variável de ambiente não encontrada", "envKey", envKey)
 		}
 	}
 
-	// 4. Tenta usar o GoclawProvider (Novo motor de IA)
-	gp, err := NewGoclawProvider(name, baseURL, apiKey, "")
-	if err == nil {
-		return gp
+	// 3.5. Validação Falha Rápida (Fail Fast) para API Keys vazias
+	if apiKey == "" && nameLower != "ollama" && nameLower != "lmstudio" {
+		envMsg := envKey
+		if envMsg == "" {
+			envMsg = "padrão do provedor"
+		}
+		return nil, fmt.Errorf("Token de Autenticação ausente. Configure a 'API Key' para '%s' na Interface ou exporte a variável de ambiente '%s'", nameLower, envMsg)
 	}
 
-	fmt.Printf("⚠️ Erro ao iniciar GoclawProvider (%v), usando fallback nativo...\n", err)
+	// 4. Verifica se é um modelo local (LM Studio, Ollama ou Localhost)
+	isLocal := isLocalProvider(nameLower, baseURL)
+	mode := "Cloud ☁️"
+	if isLocal {
+		mode = "Local 🏠"
+	}
 
-	switch name {
+	// 5. Tenta usar o GoclawProvider (Novo motor de IA)
+	logger.Info("🚀 [LLM] Inicializando GoclawProvider", "mode", mode, "provider", nameLower, "baseURL", baseURL, "apiKeyLen", len(apiKey))
+
+	// Usamos o nome original (ex: "openrouter") para que o GoclawProvider
+	// possa aplicar configurações específicas de cada provedor (como Site Info).
+	gp, err := NewGoclawProvider(nameLower, baseURL, apiKey, "", sequential)
+	if err == nil {
+		return gp, nil
+	}
+
+	logger.Warn("⚠️ Erro ao iniciar GoclawProvider, usando fallback nativo...", "error", err)
+
+	switch nameLower {
 	case "ollama":
-		return NewOllamaProvider(baseURL)
+		return NewOllamaProvider(baseURL), nil
 	case "anthropic":
-		return &AnthropicProvider{BaseURL: baseURL, APIKey: apiKey}
+		return &AnthropicProvider{BaseURL: baseURL, APIKey: apiKey}, nil
 	case "gemini":
-		return NewGeminiProvider(baseURL, apiKey)
+		return NewGeminiProvider(baseURL, apiKey), nil
 	case "openrouter":
-		return NewOpenRouterProvider(baseURL, apiKey)
+		return NewOpenRouterProvider(baseURL, apiKey), nil
 	case "openai", "lmstudio":
-		return NewOpenAIProvider(baseURL, apiKey)
+		return NewOpenAIProvider(baseURL, apiKey), nil
 	default:
-		return NewOpenAIProvider(baseURL, apiKey)
+		return NewOpenAIProvider(baseURL, apiKey), nil
 	}
 }
 
@@ -158,10 +230,15 @@ func (c *LLMClient) AskWithContext(ctx context.Context, prompt string, session *
 			c.OnProgress("Pensando...")
 		}
 
-		startLLM := analytic.StartLLMCall(ctx, c.Provider.Name(), c.Model)
+		// Cada iteração do loop de ferramentas tem seu próprio timeout (fôlego individual)
+		// mas ainda respeita o cancelamento do contexto pai (ex: timeout global da tarefa)
+		iterCtx, cancel := context.WithTimeout(ctx, c.Timeout)
+
+		startLLM := analytic.StartLLMCall(iterCtx, c.Provider.Name(), c.Model)
 		startTime := time.Now()
-		resp, err := c.Provider.Chat(ctx, c.Model, messages, tools)
+		resp, err := c.Provider.Chat(iterCtx, c.Model, messages, tools)
 		duration := time.Since(startTime)
+		cancel() // Libera recursos assim que a chamada termina
 
 		if err != nil {
 			analytic.EndLLMCall(session, fmt.Sprintf("LLM Call %d", i+1), startLLM, 0, 0, err)
@@ -169,7 +246,15 @@ func (c *LLMClient) AskWithContext(ctx context.Context, prompt string, session *
 		}
 
 		logger.Info("✨ IA respondeu", "duration", duration.String(), "provider", c.Provider.Name())
-		analytic.EndLLMCall(session, fmt.Sprintf("LLM Call %d", i+1), startLLM, resp.Usage.PromptTokens, resp.Usage.CompletionTokens, nil)
+		pTokens, cTokens := 0, 0
+		if resp.Usage.PromptTokens > 0 {
+			pTokens = resp.Usage.PromptTokens
+		}
+		if resp.Usage.CompletionTokens > 0 {
+			cTokens = resp.Usage.CompletionTokens
+		}
+
+		analytic.EndLLMCall(session, fmt.Sprintf("LLM Call %d", i+1), startLLM, pTokens, cTokens, nil)
 
 		messages = append(messages, Message{
 			Role:      resp.Role,
@@ -282,4 +367,33 @@ TEXT TO TRANSLATE:
 	}
 
 	return translated, nil
+}
+
+func maskKey(key string) string {
+	if len(key) <= 12 {
+		return "****"
+	}
+	return key[:8] + "..." + key[len(key)-4:]
+}
+
+func isLocalProvider(name, baseURL string) bool {
+	nameLower := strings.ToLower(name)
+	if nameLower == "ollama" || nameLower == "lmstudio" {
+		return true
+	}
+	baseURL = strings.ToLower(baseURL)
+	return strings.Contains(baseURL, "localhost") || strings.Contains(baseURL, "127.0.0.1") || strings.Contains(baseURL, "0.0.0.0")
+}
+
+// resolveExpertID tenta mapear o nome do provedor para um ID de expert válido
+func resolveExpertID(name string) string {
+	nameLower := strings.ToLower(name)
+	if strings.Contains(nameLower, "gemini") {
+		return "gemini"
+	}
+	if strings.Contains(nameLower, "crush") {
+		return "crush"
+	}
+	// Fallback para a primeira palavra do nome (ex: "MyCLI Expert" -> "mycli")
+	return strings.Split(nameLower, " ")[0]
 }

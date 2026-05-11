@@ -2,14 +2,17 @@ import React, { useState, useEffect, useRef } from 'react';
 import ReactMarkdown from 'react-markdown';
 import { DragDropContext, Droppable, Draggable } from '@hello-pangea/dnd';
 import { translations } from './translations';
+import StackBuilderStep from './components/StackBuilderStep';
 import { 
   Terminal, 
   Wand2, 
   Settings2, 
   Play, 
   CheckCircle2, 
+  XCircle,
   AlertCircle, 
   ChevronRight, 
+  ChevronLeft,
   ChevronDown,
   Code2, 
   Rocket, 
@@ -26,8 +29,11 @@ import {
   Database,
   Sparkles,
   GitPullRequest,
+  Loader2,
+  MoreVertical,
   FolderOpen,
   Eye,
+  File,
   RefreshCw,
   Clock,
   X,
@@ -37,12 +43,30 @@ import {
   Save,
   Plus,
   Check,
-  BookOpen
+  BookOpen,
+  Binary,
+  Activity,
+  FileText
 } from 'lucide-react';
 
 import { KnowledgeBase } from './components/KnowledgeBase';
+import TaskSpecModal from './components/TaskSpecModal';
 
-const API_BASE = 'http://localhost:8080/api';
+// Se estiver em modo DEV (Vite), usa a porta configurada ou default.
+// Se estiver em produção (servido pelo Go), usa caminhos relativos.
+const API_BASE = import.meta.env.DEV 
+  ? `http://localhost:${import.meta.env.VITE_API_PORT || '10808'}/api` 
+  : '/api';
+
+const formatContext = (val) => {
+  if (val >= 1000000) return { val: val / 1000000, unit: 'M' };
+  return { val: val / 1000, unit: 'K' };
+};
+
+const parseContext = (val, unit) => {
+  const num = parseFloat(val) || 0;
+  return unit === 'M' ? Math.round(num * 1000000) : Math.round(num * 1000);
+};
 
 function App() {
   const [activeTab, setActiveTab] = useState('workspace');
@@ -74,6 +98,7 @@ function App() {
   const [step, setStep] = useState(1);
   const [languages, setLanguages] = useState([]);
   const [patterns, setPatterns] = useState([]);
+  const [stackTemplates, setStackTemplates] = useState([]);
   const [loading, setLoading] = useState(false);
   const [status, setStatus] = useState(null);
   const [roadmap, setRoadmap] = useState(null);
@@ -88,11 +113,22 @@ function App() {
   const [viewingCode, setViewingCode] = useState(null); // { title: string, code: string }
   const [viewingDiff, setViewingDiff] = useState(null); // { title: string, diff: string }
   const [logs, setLogs] = useState([]);
+  const [terminalOutput, setTerminalOutput] = useState('');
   const [llmStatus, setLlmStatus] = useState('checking'); // 'checking', 'online', 'offline'
   const [activeLlmInfo, setActiveLlmInfo] = useState({ provider: '', model: '', label: 'Nenhum' });
   const [isAiSettingsOpen, setIsAiSettingsOpen] = useState(false);
   const [llmConfig, setLlmConfig] = useState(null);
+  const [pluginStatus, setPluginStatus] = useState({});
+  const [isAddingProvider, setIsAddingProvider] = useState(false);
+  const [newProvider, setNewProvider] = useState({ name: '', api_url: '', api_key: '', env_api_key: '', sequential: false });
+  const [isAddingModelFor, setIsAddingModelFor] = useState(null);
+  const [newModel, setNewModel] = useState({ name: '', label: '', context: 128000 });
   const [interpreting, setInterpreting] = useState(false);
+  const [editingProvider, setEditingProvider] = useState(null);
+  const [editingModel, setEditingModel] = useState(null); // { providerName, model }
+  const [contextUnit, setContextUnit] = useState('K'); // 'K' or 'M'
+  const [contextValue, setContextValue] = useState(128);
+
 
   const [inferringPurpose, setInferringPurpose] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -104,9 +140,9 @@ function App() {
   const [pathStatus, setPathStatus] = useState({ initialized: false, hasCode: false, metadata: null });
   const [workspaceProjects, setWorkspaceProjects] = useState([]);
   const [auditingTaskIds, setAuditingTaskIds] = useState(new Set());
+  const [checkingTaskTests, setCheckingTaskTests] = useState(new Set());
   const [viewingTaskPrompt, setViewingTaskPrompt] = useState(null); // { title: string, prompt: string }
-  const abortControllerRef = useRef(null);
-
+  const [taskSpecModal, setTaskSpecModal] = useState({ isOpen: false, taskId: null });
   const [formData, setFormData] = useState({
     name: '',
     language: '',
@@ -123,8 +159,60 @@ function App() {
     dataStrategy: '',
     stateManagement: '',
     apiContract: '',
-    customization: ''
+    customization: '',
+    stack: { id: '', name: '', libraries: [] }
   });
+
+  const abortControllerRef = useRef(null);
+  const formDataRef = useRef(formData);
+
+  // Sync ref with state
+  useEffect(() => {
+    formDataRef.current = formData;
+  }, [formData]);
+
+  const [isDirty, setIsDirty] = useState(false);
+
+  // Debounced Auto-Save
+  useEffect(() => {
+    if (!isDirty || !formData.path) return;
+
+    const timer = setTimeout(() => {
+      silentSave();
+      setIsDirty(false);
+    }, 2000); // 2 segundos de inatividade salvam automaticamente
+
+    return () => clearTimeout(timer);
+  }, [formData, isDirty]);
+
+  const silentSave = async (updatedRoadmap = null) => {
+    const currentData = formDataRef.current;
+    if (!currentData.path) return;
+    const roadmapToSave = updatedRoadmap || roadmap;
+
+    try {
+      await apiRequest(`/project/save-spec`, {
+        method: 'POST',
+        body: JSON.stringify({
+          path: currentData.path,
+          config: {
+            ...currentData,
+            instructions: currentData.additionalInstructions,
+            patterns: [
+              currentData.architecture,
+              ...(currentData.philosophies || []), 
+              ...(currentData.designPatterns || []), 
+              ...(currentData.dataPatterns || [])
+            ].filter(p => p && p !== '')
+          },
+          roadmap: roadmapToSave
+        })
+      });
+      console.log("💾 [AUTO-SAVE] Spec persistida com sucesso.");
+    } catch (err) {
+      console.error("❌ [AUTO-SAVE] Erro ao persistir:", err);
+    }
+  };
 
   const calculateHealthScore = () => {
     let score = 100;
@@ -176,9 +264,23 @@ function App() {
   };
 
   useEffect(() => {
+    if (isDirty) {
+      silentSave();
+      setIsDirty(false);
+    }
+  }, [activeTab]);
+
+  useEffect(() => {
     fetchLanguages();
     checkLlmStatus();
+    checkPluginStatus();
     fetchWorkspaceProjects();
+
+    const interval = setInterval(() => {
+      checkLlmStatus();
+      checkPluginStatus();
+    }, 15000);
+    return () => clearInterval(interval);
   }, []);
 
   useEffect(() => {
@@ -191,9 +293,10 @@ function App() {
     try {
       const response = await apiRequest(`/projects`);
       const data = await response.json();
-      setWorkspaceProjects(data);
+      setWorkspaceProjects(Array.isArray(data) ? data : []);
     } catch (err) {
       console.error("Erro ao carregar workspace:", err);
+      setWorkspaceProjects([]);
     }
   };
 
@@ -238,6 +341,18 @@ function App() {
     } catch (err) {
       setLlmStatus('offline');
       setActiveLlmInfo({ provider: '', model: '', label: 'Offline' });
+    }
+  };
+
+  const checkPluginStatus = async () => {
+    try {
+      const response = await apiRequest('/plugins/status');
+      if (response.ok) {
+        const data = await response.json();
+        setPluginStatus(data);
+      }
+    } catch (err) {
+      console.error('Erro ao verificar status dos plugins:', err);
     }
   };
 
@@ -387,10 +502,12 @@ function App() {
           msg: `Projeto existente detectado em ${path}. Configurações carregadas.`, 
           type: 'success' 
         }]);
+        return data;
       }
     } catch (err) {
       console.error("Erro ao verificar status do projeto:", err);
     }
+    return null;
   };
 
   const interpretProject = async () => {
@@ -600,6 +717,102 @@ function App() {
     }
   };
 
+  const handleAddProvider = async () => {
+    if (!newProvider.name) return;
+    try {
+      const response = await apiRequest('/llm/provider', {
+        method: 'POST',
+        body: JSON.stringify({
+          name: newProvider.name,
+          api_url: newProvider.api_url,
+          api_key: newProvider.api_key,
+          env_api_key: newProvider.env_api_key,
+          sequential: newProvider.sequential,
+          enabled: true,
+          models: []
+        })
+      });
+      if (!response.ok) throw new Error(await response.text());
+      
+      // Refresh config
+      const configRes = await apiRequest(`/llm/reload`, { method: 'POST' });
+      const data = await configRes.json();
+      setLlmConfig(data);
+      
+      setIsAddingProvider(false);
+      setEditingProvider(null);
+      setNewProvider({ name: '', api_url: '', api_key: '', env_api_key: '' });
+      setLogs(prev => [...prev, { id: Date.now(), msg: t('sync_success'), type: 'success' }]);
+    } catch (err) {
+      setLogs(prev => [...prev, { id: Date.now(), msg: t('update_provider_error'), type: 'error' }]);
+    }
+  };
+
+  const handleAddModel = async () => {
+    if (!newModel.name || !isAddingModelFor) return;
+    try {
+      const response = await apiRequest('/llm/provider/model', {
+        method: 'POST',
+        body: JSON.stringify({
+          provider: isAddingModelFor,
+          model: {
+            name: newModel.name,
+            label: newModel.label || newModel.name,
+            context: parseInt(newModel.context) || 128000,
+            enabled: true
+          }
+        })
+      });
+      if (!response.ok) throw new Error(await response.text());
+      
+      // Refresh config
+      const configRes = await apiRequest(`/llm/reload`, { method: 'POST' });
+      const data = await configRes.json();
+      setLlmConfig(data);
+      
+      setIsAddingModelFor(null);
+      setEditingModel(null);
+      setNewModel({ name: '', label: '', context: 128000 });
+      setLogs(prev => [...prev, { id: Date.now(), msg: t('sync_success'), type: 'success' }]);
+    } catch (err) {
+      setLogs(prev => [...prev, { id: Date.now(), msg: t('update_provider_error'), type: 'error' }]);
+    }
+  };
+
+
+  const handleDeleteProvider = async (name) => {
+    if (!window.confirm(t('confirm_delete_provider').replace('{name}', name))) return;
+    try {
+      const response = await apiRequest(`/llm/provider?name=${encodeURIComponent(name)}`, { method: 'DELETE' });
+      if (!response.ok) throw new Error(await response.text());
+      
+      const configRes = await apiRequest(`/llm/reload`, { method: 'POST' });
+      const data = await configRes.json();
+      setLlmConfig(data);
+      checkLlmStatus();
+      setLogs(prev => [...prev, { id: Date.now(), msg: t('sync_success'), type: 'success' }]);
+    } catch (err) {
+      setLogs(prev => [...prev, { id: Date.now(), msg: t('error_loading'), type: 'error' }]);
+    }
+  };
+
+  const handleDeleteModel = async (provider, model) => {
+    if (!window.confirm(t('confirm_delete_model').replace('{name}', model))) return;
+    try {
+      const response = await apiRequest(`/llm/provider/model?provider=${encodeURIComponent(provider)}&model=${encodeURIComponent(model)}`, { method: 'DELETE' });
+      if (!response.ok) throw new Error(await response.text());
+      
+      const configRes = await apiRequest(`/llm/reload`, { method: 'POST' });
+      const data = await configRes.json();
+      setLlmConfig(data);
+      checkLlmStatus();
+      setLogs(prev => [...prev, { id: Date.now(), msg: t('sync_success'), type: 'success' }]);
+    } catch (err) {
+      setLogs(prev => [...prev, { id: Date.now(), msg: t('error_loading'), type: 'error' }]);
+    }
+  };
+
+
   const saveRoadmapToBackend = async (newRoadmap) => {
     try {
       await apiRequest(`/project/save-roadmap`, {
@@ -619,7 +832,9 @@ function App() {
     setEditingTask({ sprintId, taskId: task.id });
     setEditedTaskData({ 
       ...task, 
-      acceptance_criteria: task.acceptance_criteria || [] 
+      acceptance_criteria: task.acceptance_criteria || [],
+      files: task.files || [],
+      test_files: task.test_files || []
     });
   };
 
@@ -732,9 +947,10 @@ function App() {
     try {
       const response = await apiRequest(`/languages`);
       const data = await response.json();
-      setLanguages(data);
+      setLanguages(Array.isArray(data) ? data : []);
     } catch (error) {
       console.error("Erro ao buscar linguagens:", error);
+      setLanguages([]);
     }
   };
 
@@ -743,7 +959,20 @@ function App() {
     try {
       const response = await apiRequest(`/patterns/${lang}`);
       const data = await response.json();
-      const allPatterns = data || [];
+      
+      // Suporte a novo formato (objeto) ou legado (array)
+      let allPatterns = [];
+      let templates = [];
+      
+      if (Array.isArray(data)) {
+        allPatterns = data;
+      } else if (data && typeof data === 'object') {
+        allPatterns = data.patterns || [];
+        templates = data.stack_templates || [];
+      }
+      
+      setStackTemplates(templates);
+
       const uniquePatterns = [];
       const seenIds = new Set();
       allPatterns.forEach(p => {
@@ -864,7 +1093,6 @@ function App() {
     setLoading(true);
     setStatus({ type: 'info', message: 'Iniciando ancoragem do projeto...' });
     
-    // Agrupar todos os padrões selecionados
     const allPatterns = [
       formData.architecture,
       ...formData.philosophies,
@@ -887,20 +1115,23 @@ function App() {
           dataStrategy: formData.dataStrategy,
           stateManagement: formData.stateManagement,
           apiContract: formData.apiContract,
-          customization: formData.customization
+          customization: formData.customization,
+          architecture: formData.architecture,
+          stack: formData.stack
         })
       });
 
       if (response.ok) {
         setStatus({ type: 'success', message: 'Projeto ancorado! Gerando roadmap...' });
-        generateRoadmap(allPatterns);
+        await generateRoadmap(allPatterns);
       } else {
-        setStatus({ type: 'error', message: 'Falha na inicialização.' });
+        const errorData = await response.json().catch(() => ({}));
+        setStatus({ type: 'error', message: `Falha na inicialização: ${errorData.error || response.statusText}` });
       }
     } catch (error) {
       setStatus({ type: 'error', message: 'Erro de conexão com o servidor.' });
     } finally {
-      setLoading(false);
+      setTimeout(() => setLoading(false), 500);
     }
   };
 
@@ -913,6 +1144,12 @@ function App() {
           patterns: allPatterns
         })
       });
+
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({}));
+        throw new Error(errorData.error || `Erro HTTP ${response.status}`);
+      }
+
       const data = await response.json();
       setRoadmap(data);
       setActiveTab('roadmap');
@@ -1181,6 +1418,24 @@ function App() {
           msg: `Falha na execução: ${result.message}`, 
           type: 'error' 
         }]);
+
+        // Sincronizar mesmo em caso de falha para mostrar logs de erro e arquivos tocados
+        const updatedData = await checkProjectStatus(formData.path);
+        
+        // Se houver logs de teste na tarefa que acabamos de executar, mostrar no terminal
+        if (updatedData && updatedData.roadmap) {
+           // Encontrar a tarefa atual no roadmap atualizado
+           let updatedTask = null;
+           updatedData.roadmap.sprints.forEach(s => {
+             const t = s.tasks.find(t => String(t.id) === String(task.id));
+             if (t) updatedTask = t;
+           });
+
+           if (updatedTask && updatedTask.test_logs) {
+             setTerminalOutput(`❌ Falha na execução da tarefa "${task.title}":\n\n${updatedTask.test_logs}`);
+             setActiveTab('terminal');
+           }
+        }
       }
     } catch (error) {
       setLogs(prev => [...prev, { 
@@ -1190,6 +1445,47 @@ function App() {
       }]);
     } finally {
       setExecutingTask(null);
+    }
+  };
+  
+  const checkTaskTests = async (sprint, task) => {
+    setCheckingTaskTests(prev => new Set([...prev, task.id]));
+    try {
+      const response = await apiRequest('/project/check-tests', {
+        method: 'POST',
+        body: JSON.stringify({
+          project_path: formData.path,
+          sprint_id: sprint.id,
+          task_id: task.id
+        })
+      });
+      if (!response.ok) {
+        const errorData = await response.json();
+        throw new Error(errorData.error || 'Falha ao validar testes');
+      }
+      const data = await response.json();
+      
+      setLogs(prev => [...prev, { 
+        time: new Date().toLocaleTimeString(), 
+        msg: `Validação de testes: ${task.title} | Status: ${data.test_status?.toUpperCase()}`, 
+        type: data.success ? 'success' : 'error' 
+      }]);
+
+      await checkProjectStatus(formData.path);
+
+      if (!data.success && data.report) {
+        setTerminalOutput(`❌ Falha na validação da tarefa "${task.title}":\n\n${data.report}`);
+        setActiveTab('terminal');
+      }
+    } catch (err) {
+      console.error("Erro ao checar testes:", err);
+      alert(t('error_loading'));
+    } finally {
+      setCheckingTaskTests(prev => {
+        const next = new Set(prev);
+        next.delete(task.id);
+        return next;
+      });
     }
   };
 
@@ -1213,8 +1509,7 @@ function App() {
 
   const renderPatternSection = (title, icon, category, isArchitecture = false) => {
     const filtered = patterns.filter(p => p.category === category);
-    if (filtered.length === 0) return null;
-
+    
     if (isArchitecture) {
       return (
         <div className="mb-6">
@@ -1348,7 +1643,13 @@ function App() {
               onClick={() => setActiveTab('logs')}
               className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl transition-all ${activeTab === 'logs' ? 'bg-blue-50 text-blue-600 font-semibold' : 'text-slate-500 hover:bg-slate-50'}`}
             >
-              <Terminal size={18} /> {t('logs')}
+              <History size={18} /> {t('logs')}
+            </button>
+            <button 
+              onClick={() => setActiveTab('terminal')}
+              className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl transition-all ${activeTab === 'terminal' ? 'bg-blue-50 text-blue-600 font-semibold' : 'text-slate-500 hover:bg-slate-50'}`}
+            >
+              <Terminal size={18} /> {t('terminal')}
             </button>
             <button 
               onClick={() => setActiveTab('harness')}
@@ -1364,6 +1665,27 @@ function App() {
               <BookOpen size={18} /> {t('knowledge_base')}
             </button>
           </nav>
+
+          {/* Experts Status */}
+          <div className="mt-8 px-4 pb-20">
+            <h3 className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-4 px-2">Especialistas</h3>
+            <div className="space-y-1">
+              {Object.values(pluginStatus).map(plugin => (
+                <div key={plugin.id} className="flex items-center justify-between p-2 rounded-xl hover:bg-slate-50 transition-all border border-transparent hover:border-slate-100 group">
+                  <div className="flex items-center gap-2.5">
+                    <div className={`w-1.5 h-1.5 rounded-full ${plugin.healthy ? 'bg-green-500 shadow-[0_0_8px_rgba(34,197,94,0.3)] animate-pulse' : 'bg-slate-300'}`} />
+                    <div className="flex flex-col">
+                      <span className="text-xs font-bold text-slate-600 capitalize leading-none mb-1">{plugin.name}</span>
+                      <span className="text-[9px] text-slate-400 font-medium">{plugin.language || 'Global'}</span>
+                    </div>
+                  </div>
+                  <span className={`text-[8px] font-black uppercase tracking-tighter px-1.5 py-0.5 rounded ${plugin.healthy ? 'bg-emerald-50 text-emerald-600' : 'bg-slate-100 text-slate-400'}`}>
+                    {plugin.healthy ? 'On' : 'Off'}
+                  </span>
+                </div>
+              ))}
+            </div>
+          </div>
         </div>
         
         {/* Language Selector */}
@@ -1498,7 +1820,7 @@ function App() {
               </div>
 
               <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-                {workspaceProjects.length === 0 ? (
+                {(workspaceProjects?.length || 0) === 0 ? (
                   <div className="col-span-full py-20 text-center bg-white rounded-3xl border border-dashed border-slate-300">
                     <FolderOpen size={48} className="mx-auto text-slate-300 mb-4" />
                     <h3 className="text-xl font-bold text-slate-400">Nenhum projeto cadastrado</h3>
@@ -1571,10 +1893,10 @@ function App() {
                       if (step > 1) setStep(step - 1);
                       else setActiveTab('logs');
                     }}
-                    className="w-10 h-10 rounded-xl bg-white border border-slate-200 flex items-center justify-center text-slate-400 hover:text-blue-600 hover:border-blue-200 transition-all shadow-sm group"
-                    title={step === 1 ? t('back') : t('back')}
+                    className="w-12 h-12 rounded-full bg-[#33CCFF] flex items-center justify-center text-slate-700 hover:scale-110 transition-all shadow-md group shrink-0"
+                    title={t('back')}
                   >
-                    <ChevronRight className="rotate-180 group-hover:-translate-x-0.5 transition-transform" size={18} />
+                    <ChevronLeft className="group-hover:-translate-x-0.5 transition-transform" size={24} />
                   </button>
 
                   {/* Indicador de Passos Visual */}
@@ -1598,20 +1920,45 @@ function App() {
                     <div className="w-8 h-px bg-slate-100 -mt-4" />
 
                     <div className="flex flex-col items-center gap-1 px-4 min-w-[70px]">
-                      <div className={`w-8 h-8 rounded-full flex items-center justify-center text-[11px] font-black transition-all ${step === 3 ? 'bg-blue-600 text-white shadow-lg shadow-blue-100 ring-4 ring-blue-50' : 'bg-slate-100 text-slate-400'}`}>
-                        3
+                      <div className={`w-8 h-8 rounded-full flex items-center justify-center text-[11px] font-black transition-all ${step === 3 ? 'bg-blue-600 text-white shadow-lg shadow-blue-100 ring-4 ring-blue-50' : step > 3 ? 'bg-emerald-500 text-white' : 'bg-slate-100 text-slate-400'}`}>
+                        {step > 3 ? <CheckCircle2 size={16} /> : '3'}
                       </div>
                       <span className={`text-[9px] font-black uppercase tracking-wider ${step === 3 ? 'text-blue-600' : 'text-slate-400'}`}>{t('step_3')}</span>
+                    </div>
+
+                    <div className="w-8 h-px bg-slate-100 -mt-4" />
+
+                    <div className="flex flex-col items-center gap-1 px-4 min-w-[70px]">
+                      <div className={`w-8 h-8 rounded-full flex items-center justify-center text-[11px] font-black transition-all ${step === 4 ? 'bg-blue-600 text-white shadow-lg shadow-blue-100 ring-4 ring-blue-50' : step > 4 ? 'bg-emerald-500 text-white' : 'bg-slate-100 text-slate-400'}`}>
+                        {step > 4 ? <CheckCircle2 size={16} /> : '4'}
+                      </div>
+                      <span className={`text-[9px] font-black uppercase tracking-wider ${step === 4 ? 'text-blue-600' : 'text-slate-400'}`}>{t('step_4')}</span>
+                    </div>
+
+                    <div className="w-8 h-px bg-slate-100 -mt-4" />
+
+                    <div className="flex flex-col items-center gap-1 px-4 min-w-[70px]">
+                      <div className={`w-8 h-8 rounded-full flex items-center justify-center text-[11px] font-black transition-all ${step === 5 ? 'bg-blue-600 text-white shadow-lg shadow-blue-100 ring-4 ring-blue-50' : 'bg-slate-100 text-slate-400'}`}>
+                        5
+                      </div>
+                      <span className={`text-[9px] font-black uppercase tracking-wider ${step === 5 ? 'text-blue-600' : 'text-slate-400'}`}>{t('step_5')}</span>
                     </div>
                   </div>
 
                   <button 
-                    disabled={step === 3 || (step === 1 ? (!formData.language || !formData.projectName) : !formData.architecture)}
-                    onClick={() => setStep(step + 1)}
-                    className="w-10 h-10 rounded-xl bg-white border border-slate-200 flex items-center justify-center text-slate-400 hover:text-blue-600 hover:border-blue-200 transition-all shadow-sm group disabled:opacity-30 disabled:cursor-not-allowed"
-                    title="Próximo Passo"
+                    disabled={loading || (step === 1 ? (!formData.language || !formData.projectName) : (step === 5 ? calculateHealthScore() < 30 : !formData.architecture))}
+                    onClick={() => {
+                      if (step === 5) handleInitialize();
+                      else setStep(step + 1);
+                    }}
+                    className="w-12 h-12 rounded-full bg-[#33CCFF] flex items-center justify-center text-slate-700 hover:scale-110 transition-all shadow-md group shrink-0 disabled:opacity-30 disabled:cursor-not-allowed"
+                    title={step === 5 ? t('launch_mission') : "Próximo Passo"}
                   >
-                    <ChevronRight className="group-hover:translate-x-0.5 transition-transform" size={18} />
+                    {step === 5 ? (
+                      loading ? <Loader2 className="animate-spin text-slate-600" size={24} /> : <Rocket size={24} className="group-hover:scale-110 transition-transform" />
+                    ) : (
+                      <ChevronRight className="group-hover:translate-x-0.5 transition-transform" size={24} />
+                    )}
                   </button>
                 </div>
               </div>
@@ -1676,7 +2023,10 @@ function App() {
                             id="expert-select"
                             className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-2xl outline-none focus:ring-2 focus:ring-blue-500 transition-all font-bold text-slate-700"
                             value={formData.language}
-                            onChange={handleLanguageChange}
+                            onChange={(e) => {
+                              handleLanguageChange(e);
+                              setIsDirty(true);
+                            }}
                           >
                             <option value="">{t('select_expert')}</option>
                             {languages.map(lang => (
@@ -1740,7 +2090,11 @@ function App() {
                               placeholder="Qual dor o sistema resolve?"
                               className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-2xl outline-none focus:ring-2 focus:ring-blue-500 transition-all min-h-[250px] font-mono text-sm"
                               value={formData.domain}
-                              onChange={(e) => setFormData({...formData, domain: e.target.value})}
+                              onChange={(e) => {
+                                setFormData({...formData, domain: e.target.value});
+                                setIsDirty(true);
+                              }}
+                              onBlur={() => silentSave()}
                             />
                           ) : (
                             <div className="w-full px-6 py-5 bg-white border border-slate-200 rounded-2xl min-h-[250px] overflow-y-auto">
@@ -1759,7 +2113,11 @@ function App() {
                               placeholder="O que o sistema faz? (ex: cadastrar produto)"
                               className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-2xl outline-none focus:ring-2 focus:ring-blue-500 transition-all min-h-[100px]"
                               value={formData.functionalRequirements}
-                              onChange={(e) => setFormData({...formData, functionalRequirements: e.target.value})}
+                              onChange={(e) => {
+                                setFormData({...formData, functionalRequirements: e.target.value});
+                                setIsDirty(true);
+                              }}
+                              onBlur={() => silentSave()}
                             />
                           </div>
                           <div>
@@ -1768,7 +2126,11 @@ function App() {
                               placeholder="O que o sistema é? (ex: rápido, escalável)"
                               className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-2xl outline-none focus:ring-2 focus:ring-blue-500 transition-all min-h-[100px]"
                               value={formData.nonFunctionalRequirements}
-                              onChange={(e) => setFormData({...formData, nonFunctionalRequirements: e.target.value})}
+                              onChange={(e) => {
+                                setFormData({...formData, nonFunctionalRequirements: e.target.value});
+                                setIsDirty(true);
+                              }}
+                              onBlur={() => silentSave()}
                             />
                           </div>
                         </div>
@@ -1791,7 +2153,11 @@ function App() {
                           <select 
                             className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-blue-500 transition-all font-medium"
                             value={formData.dataStrategy}
-                            onChange={(e) => setFormData({...formData, dataStrategy: e.target.value})}
+                            onChange={(e) => {
+                              setFormData({...formData, dataStrategy: e.target.value});
+                              setIsDirty(true);
+                            }}
+                            onBlur={() => silentSave()}
                           >
                             <option value="">Selecione...</option>
                             {patterns.filter(p => p.category === 'DataStrategy').map(p => (
@@ -1809,22 +2175,17 @@ function App() {
 
                 {step === 2 && (
                   <div className="space-y-6 animate-in fade-in slide-in-from-left-4 duration-300">
-                    {/* 4. Padrões e Contratos */}
                     <section>
                       <div className="flex items-center gap-3 mb-4">
                         <div className="p-1.5 bg-emerald-50 text-emerald-600 rounded-lg">
-                          <Workflow size={18} />
+                          <Layout size={18} />
                         </div>
                         <h3 className="text-md font-bold text-slate-800">{t('step_2')}</h3>
                       </div>
                       
                       <div className="space-y-6">
-                        {/* Grade de Seleção de Patterns */}
                         <div className="space-y-1 p-4 bg-slate-50/50 rounded-2xl border border-slate-100">
                           {renderPatternSection(t('select_arch'), <Layout size={18} className="text-blue-500" />, 'Architecture', true)}
-                          {renderPatternSection(t('select_philosophies'), <ShieldCheck size={18} className="text-indigo-500" />, 'Philosophy')}
-                          {renderPatternSection(t('select_design_patterns'), <Zap size={18} className="text-amber-500" />, 'DesignPattern')}
-                          {renderPatternSection(t('select_data_patterns'), <Database size={18} className="text-emerald-500" />, 'Data')}
                         </div>
                       </div>
                     </section>
@@ -1840,6 +2201,38 @@ function App() {
                         </div>
                         <h3 className="text-md font-bold text-slate-800">{t('step_3')}</h3>
                       </div>
+                      <div className="space-y-6">
+                        <div className="space-y-1 p-4 bg-slate-50/50 rounded-2xl border border-slate-100">
+                          {renderPatternSection(t('select_philosophies'), <ShieldCheck size={18} className="text-indigo-500" />, 'Philosophy')}
+                          {renderPatternSection(t('select_design_patterns'), <Zap size={18} className="text-amber-500" />, 'DesignPattern')}
+                          {renderPatternSection(t('select_data_patterns'), <Database size={18} className="text-emerald-500" />, 'Data')}
+                        </div>
+                      </div>
+                    </section>
+                  </div>
+                )}
+
+                {step === 4 && (
+                  <StackBuilderStep 
+                   formData={formData} 
+                   setFormData={(data) => {
+                     setFormData(data);
+                     setIsDirty(true);
+                   }} 
+                   t={t} 
+                   stackTemplates={stackTemplates}
+                 />
+                )}
+
+                {step === 5 && (
+                  <div className="space-y-6 animate-in fade-in slide-in-from-left-4 duration-300">
+                    <section>
+                      <div className="flex items-center gap-3 mb-4">
+                        <div className="p-1.5 bg-blue-50 text-blue-600 rounded-lg">
+                          <ListChecks size={18} />
+                        </div>
+                        <h3 className="text-md font-bold text-slate-800">{t('step_5')}</h3>
+                      </div>
 
                       <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                         <div>
@@ -1847,7 +2240,11 @@ function App() {
                           <select 
                             className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-blue-500 transition-all font-medium"
                             value={formData.stateManagement}
-                            onChange={(e) => setFormData({...formData, stateManagement: e.target.value})}
+                            onChange={(e) => {
+                              setFormData({...formData, stateManagement: e.target.value});
+                              setIsDirty(true);
+                            }}
+                            onBlur={() => silentSave()}
                           >
                             <option value="">Selecione...</option>
                             {patterns.filter(p => p.category === 'StateManagement').map(p => (
@@ -1864,7 +2261,11 @@ function App() {
                             placeholder={t('api_placeholder')}
                             className="w-full px-4 py-2 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-blue-500 transition-all min-h-[80px] text-sm"
                             value={formData.apiContract}
-                            onChange={(e) => setFormData({...formData, apiContract: e.target.value})}
+                            onChange={(e) => {
+                              setFormData({...formData, apiContract: e.target.value});
+                              setIsDirty(true);
+                            }}
+                            onBlur={() => silentSave()}
                           />
                         </div>
                       </div>
@@ -1875,7 +2276,11 @@ function App() {
                           placeholder={t('customization_placeholder')}
                           className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-blue-500 transition-all min-h-[80px] text-sm font-mono"
                           value={formData.customization}
-                          onChange={(e) => setFormData({...formData, customization: e.target.value})}
+                          onChange={(e) => {
+                            setFormData({...formData, customization: e.target.value});
+                            setIsDirty(true);
+                          }}
+                          onBlur={() => silentSave()}
                         />
                       </div>
                     </section>
@@ -1886,7 +2291,7 @@ function App() {
                     <section className="space-y-6">
                       <div className="flex items-center gap-3 mb-2">
                         <div className="p-1.5 bg-slate-50 text-slate-600 rounded-lg">
-                          <ListChecks size={18} />
+                          <Settings2 size={18} />
                         </div>
                         <h3 className="text-md font-bold text-slate-800">{t('final_adjustments')}</h3>
                       </div>
@@ -1902,7 +2307,11 @@ function App() {
                           className="w-full bg-white border border-slate-200 rounded-xl p-3 text-xs outline-none focus:ring-2 focus:ring-blue-500 min-h-[80px] placeholder:text-slate-400"
                           placeholder={t('implementation_placeholder')}
                           value={formData.additionalInstructions}
-                          onChange={(e) => setFormData({...formData, additionalInstructions: e.target.value})}
+                          onChange={(e) => {
+                            setFormData({...formData, additionalInstructions: e.target.value});
+                            setIsDirty(true);
+                          }}
+                          onBlur={() => silentSave()}
                         />
                       </div>
 
@@ -1948,37 +2357,15 @@ function App() {
                       </span>
                     </div>
                   </div>
-
-                  <div className="flex gap-4">
-                    {step < 3 ? (
-                      <button 
-                        onClick={() => setStep(step + 1)}
-                        disabled={step === 1 ? (!formData.language || !formData.projectName) : !formData.architecture}
-                        className="flex items-center gap-2 px-10 py-4 bg-slate-900 text-white rounded-2xl font-bold hover:bg-blue-600 hover:scale-105 disabled:opacity-30 disabled:hover:scale-100 transition-all shadow-xl shadow-slate-200 group"
-                      >
-                        {t('next_step')}
-                        <ChevronRight size={18} className="group-hover:translate-x-1 transition-transform" />
-                      </button>
-                    ) : (
-                      <button 
-                        onClick={handleInitialize}
-                        disabled={loading || calculateHealthScore() < 30}
-                        className="flex items-center gap-2 px-10 py-4 bg-blue-600 text-white rounded-2xl font-bold hover:bg-blue-700 hover:scale-105 disabled:opacity-30 disabled:hover:scale-100 shadow-xl shadow-blue-200 transition-all"
-                      >
-                        {loading ? <Cpu className="animate-spin" size={18} /> : <Rocket size={18} />}
-                        {calculateHealthScore() < 30 ? t('architecture_blocked') : t('launch_mission')}
-                      </button>
-                    )}
-                  </div>
                 </div>
-              </div>
 
-              {status && (
+                {status && (
                 <div className={`mt-6 p-4 rounded-2xl flex items-center gap-3 animate-in slide-in-from-top-2 duration-300 ${status.type === 'error' ? 'bg-rose-50 text-rose-600 border border-rose-100' : 'bg-blue-50 text-blue-600 border border-blue-100'}`}>
                   {status.type === 'error' ? <AlertCircle size={20} /> : <Sparkles size={20} className="animate-pulse" />}
                   <span className="font-medium text-sm">{status.message}</span>
                 </div>
               )}
+              </div>
             </div>
           )}
 
@@ -2038,7 +2425,7 @@ function App() {
                   </button>
 
                   <button 
-                    onClick={saveProjectSpec}
+                    onClick={() => saveProjectSpec()}
                     disabled={saving || !roadmap}
                     className={`flex items-center gap-2 px-6 py-2.5 rounded-2xl font-bold text-sm transition-all shadow-lg ${
                       saving 
@@ -2188,15 +2575,95 @@ function App() {
                                                       <div className="space-y-2 pt-4 border-t border-slate-50">
                                                         <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest block mb-2">{t('acceptance_criteria')}</span>
                                                         <div className="grid grid-cols-1 md:grid-cols-2 gap-x-6 gap-y-1.5">
-                                                          {task.acceptance_criteria.map((c, idx) => (
-                                                            <div key={idx} className="flex items-center gap-2 text-xs text-slate-500">
-                                                              <div className="w-1.5 h-1.5 rounded-full bg-slate-200"></div>
-                                                              {c}
+                                                          {task.acceptance_criteria.map((c, idx) => {
+                                                            const isObject = typeof c === 'object' && c !== null;
+                                                            const description = isObject ? c.description : c;
+                                                            const status = isObject ? c.status : 'pending';
+                                                            
+                                                            return (
+                                                              <div key={idx} className="flex items-center gap-2 text-xs">
+                                                                {status === 'met' ? (
+                                                                  <CheckCircle2 size={12} className="text-emerald-500 shrink-0" />
+                                                                ) : status === 'unmet' ? (
+                                                                  <XCircle size={12} className="text-rose-500 shrink-0" />
+                                                                ) : (
+                                                                  <div className="w-3 h-3 rounded-full border border-slate-300 shrink-0"></div>
+                                                                )}
+                                                                <span className={status === 'met' ? 'text-slate-400' : 'text-slate-600'}>
+                                                                  {description}
+                                                                </span>
+                                                              </div>
+                                                            );
+                                                          })}
+                                                        </div>
+                                                      </div>
+                                                    )}
+
+                                                    {task.files && task.files.length > 0 && (
+                                                      <div className="mt-4 pt-4 border-t border-slate-50">
+                                                        <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest block mb-2">{t('task_files')}</span>
+                                                        <div className="flex flex-wrap gap-2">
+                                                          {task.files.map((file, idx) => (
+                                                            <div key={idx} className="flex items-center gap-1.5 px-2 py-1 bg-indigo-50 text-indigo-700 rounded-lg text-[10px] font-mono border border-indigo-100">
+                                                              <File size={10} />
+                                                              {file.split('/').pop()}
                                                             </div>
                                                           ))}
                                                         </div>
                                                       </div>
                                                     )}
+
+                                                    {task.test_files && task.test_files.length > 0 && (
+                                                      <div className="mt-4 pt-4 border-t border-slate-50">
+                                                        <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest block mb-2">Test Files</span>
+                                                        <div className="flex flex-wrap gap-2">
+                                                          {task.test_files.map((file, idx) => (
+                                                            <div key={idx} className="flex items-center gap-1.5 px-2 py-1 bg-emerald-50 text-emerald-700 rounded-lg text-[10px] font-mono border border-emerald-100">
+                                                              <FileCode size={10} />
+                                                              {file.split('/').pop()}
+                                                            </div>
+                                                          ))}
+                                                        </div>
+                                                      </div>
+                                                    )}
+
+                                                    {/* TEST COVERAGE BOX */}
+                                                    <div className="mt-6 p-4 rounded-2xl bg-slate-50/50 border border-slate-100 flex items-center justify-between group/test">
+                                                      <div className="flex items-center gap-4">
+                                                        <div className={`w-10 h-10 rounded-xl flex items-center justify-center ${
+                                                          task.test_status === 'success' ? 'bg-emerald-100 text-emerald-600' :
+                                                          task.test_status === 'failure' ? 'bg-rose-100 text-rose-600' :
+                                                          'bg-slate-200 text-slate-400'
+                                                        }`}>
+                                                          {task.test_status === 'success' ? <ShieldCheck size={20} /> : 
+                                                           task.test_status === 'failure' ? <AlertCircle size={20} /> : 
+                                                           <Binary size={20} />}
+                                                        </div>
+                                                        <div>
+                                                          <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest block mb-0.5">{t('test_coverage')}</span>
+                                                          <span className={`text-xs font-bold uppercase ${
+                                                            task.test_status === 'success' ? 'text-emerald-600' :
+                                                            task.test_status === 'failure' ? 'text-rose-600' :
+                                                            'text-slate-400'
+                                                          }`}>
+                                                            {task.test_status === 'success' ? t('test_success') : 
+                                                             task.test_status === 'failure' ? t('test_failure') : 
+                                                             t('no_tests_run')}
+                                                          </span>
+                                                        </div>
+                                                      </div>
+                                                      <button 
+                                                        onClick={() => checkTaskTests(sprint, task)}
+                                                        disabled={checkingTaskTests.has(task.id)}
+                                                        className="flex items-center gap-2 px-4 py-2 bg-white text-slate-600 border border-slate-200 rounded-xl text-[10px] font-black uppercase tracking-tight hover:border-indigo-200 hover:text-indigo-600 hover:shadow-sm transition-all disabled:opacity-50"
+                                                      >
+                                                        {checkingTaskTests.has(task.id) ? (
+                                                          <><RefreshCw size={12} className="animate-spin" /> {t('checking_tests')}</>
+                                                        ) : (
+                                                          <><Activity size={12} /> {t('check_tests')}</>
+                                                        )}
+                                                      </button>
+                                                    </div>
             
                                                     <div className="flex items-center gap-3 mt-6">
                                                       {task.status !== 'completed' && (
@@ -2216,17 +2683,24 @@ function App() {
                                                           <Eye size={14} /> {t('view_task_prompt')}
                                                         </button>
 
-                                                        <button 
-                                                          onClick={() => handleAuditTask(sprint, task)}
-                                                          disabled={auditingTaskIds.has(task.id)}
-                                                          className="flex items-center gap-2 px-4 py-2.5 bg-indigo-50 text-indigo-600 border border-indigo-100 rounded-2xl text-xs font-bold hover:bg-indigo-100 transition-all"
-                                                        >
-                                                          {auditingTaskIds.has(task.id) ? (
-                                                            <><RefreshCw size={14} className="animate-spin" /> {t('auditing')}</>
-                                                          ) : (
-                                                            <><RefreshCw size={14} /> {t('audit_status')}</>
-                                                          )}
-                                                        </button>
+                                                          <button 
+                                                            onClick={() => handleAuditTask(sprint, task)}
+                                                            disabled={auditingTaskIds.has(task.id)}
+                                                            className="flex items-center gap-2 px-4 py-2.5 bg-indigo-50 text-indigo-600 border border-indigo-100 rounded-2xl text-xs font-bold hover:bg-indigo-100 transition-all"
+                                                          >
+                                                            {auditingTaskIds.has(task.id) ? (
+                                                              <><RefreshCw size={14} className="animate-spin" /> {t('auditing')}</>
+                                                            ) : (
+                                                              <><RefreshCw size={14} /> {t('audit_status')}</>
+                                                            )}
+                                                          </button>
+
+                                                          <button 
+                                                            onClick={() => setTaskSpecModal({ isOpen: true, taskId: task.id, sprintId: sprint.id })}
+                                                            className="flex items-center gap-2 px-4 py-2.5 bg-indigo-600 text-white rounded-2xl text-xs font-bold hover:bg-indigo-700 transition-all shadow-md shadow-indigo-100"
+                                                          >
+                                                            <FileText size={14} /> {t('task_spec')}
+                                                          </button>
             
                                                       {task.status === 'completed' && (
                                                         <>
@@ -2395,6 +2869,72 @@ function App() {
                           + {t('add_criterion')}
                         </button>
                       </div>
+
+                      <div className="space-y-4">
+                        <label className="text-xs font-black text-slate-400 uppercase tracking-widest ml-1">{t('task_files')}</label>
+                        {editedTaskData.files && editedTaskData.files.map((file, idx) => (
+                          <div key={idx} className="flex gap-3">
+                            <input 
+                              value={file}
+                              placeholder="ex: internal/application/user_service.go"
+                              onChange={(e) => {
+                                const newFiles = [...editedTaskData.files];
+                                newFiles[idx] = e.target.value;
+                                setEditedTaskData({...editedTaskData, files: newFiles});
+                              }}
+                              className="flex-1 bg-slate-50 border-none rounded-xl px-4 py-3 text-sm font-mono text-slate-600 focus:ring-2 focus:ring-indigo-500/20 transition-all"
+                            />
+                            <button 
+                              onClick={() => {
+                                const newFiles = editedTaskData.files.filter((_, i) => i !== idx);
+                                setEditedTaskData({...editedTaskData, files: newFiles});
+                              }}
+                              className="p-3 text-rose-400 hover:bg-rose-50 rounded-xl transition-all"
+                            >
+                              <Trash2 size={18} />
+                            </button>
+                          </div>
+                        ))}
+                        <button 
+                          onClick={() => setEditedTaskData({...editedTaskData, files: [...(editedTaskData.files || []), '']})}
+                          className="w-full py-3 border-2 border-dashed border-slate-200 rounded-xl text-slate-400 font-bold text-xs hover:border-indigo-300 hover:text-indigo-500 transition-all"
+                        >
+                          + {t('add_file')}
+                        </button>
+                      </div>
+
+                      <div className="space-y-4">
+                        <label className="text-xs font-black text-slate-400 uppercase tracking-widest ml-1">{t('test_files')}</label>
+                        {editedTaskData.test_files && editedTaskData.test_files.map((file, idx) => (
+                          <div key={idx} className="flex gap-3">
+                            <input 
+                              value={file}
+                              placeholder="ex: internal/application/user_service_test.go"
+                              onChange={(e) => {
+                                const newFiles = [...editedTaskData.test_files];
+                                newFiles[idx] = e.target.value;
+                                setEditedTaskData({...editedTaskData, test_files: newFiles});
+                              }}
+                              className="flex-1 bg-slate-50 border-none rounded-xl px-4 py-3 text-sm font-mono text-slate-600 focus:ring-2 focus:ring-emerald-500/20 transition-all"
+                            />
+                            <button 
+                              onClick={() => {
+                                const newFiles = editedTaskData.test_files.filter((_, i) => i !== idx);
+                                setEditedTaskData({...editedTaskData, test_files: newFiles});
+                              }}
+                              className="p-3 text-rose-400 hover:bg-rose-50 rounded-xl transition-all"
+                            >
+                              <Trash2 size={18} />
+                            </button>
+                          </div>
+                        ))}
+                        <button 
+                          onClick={() => setEditedTaskData({...editedTaskData, test_files: [...(editedTaskData.test_files || []), '']})}
+                          className="w-full py-3 border-2 border-dashed border-slate-200 rounded-xl text-slate-400 font-bold text-xs hover:border-emerald-300 hover:text-emerald-500 transition-all"
+                        >
+                          + {t('add_test_file')}
+                        </button>
+                      </div>
                     </div>
 
                     <div className="p-10 bg-slate-50/50 border-t border-slate-100 flex gap-4">
@@ -2491,6 +3031,31 @@ function App() {
                       </div>
                     ))
                   )}
+                </div>
+              </div>
+            </div>
+          )}
+
+          {activeTab === 'terminal' && (
+            <div className="animate-in fade-in zoom-in-95 duration-500">
+              <div className="mb-6 flex items-center justify-between">
+                <h2 className="text-3xl font-bold text-slate-900">{t('terminal')}</h2>
+                <button 
+                  onClick={() => setTerminalOutput('')}
+                  className="text-xs text-slate-400 hover:text-slate-600 font-bold uppercase tracking-widest"
+                >
+                  Limpar Console
+                </button>
+              </div>
+              <div className="bg-slate-950 rounded-3xl p-8 shadow-2xl shadow-slate-200 min-h-[600px] font-mono text-sm flex flex-col border border-slate-800">
+                <div className="flex items-center gap-2 mb-6 border-b border-slate-800 pb-4">
+                  <div className="w-3 h-3 rounded-full bg-red-500/50" />
+                  <div className="w-3 h-3 rounded-full bg-yellow-500/50" />
+                  <div className="w-3 h-3 rounded-full bg-green-500/50" />
+                  <span className="ml-2 text-slate-600 text-xs tracking-widest uppercase font-black">TDD Output Console</span>
+                </div>
+                <div className="flex-1 overflow-y-auto custom-scrollbar whitespace-pre-wrap text-slate-300 leading-relaxed">
+                  {terminalOutput || <span className="text-slate-700 italic">Aguardando saída de validação...</span>}
                 </div>
               </div>
             </div>
@@ -2705,8 +3270,48 @@ function App() {
                            <span className="font-black text-[10px] uppercase">{provider.name.substring(0, 2)}</span>
                         </div>
                         <div>
-                          <h3 className="font-bold text-slate-800 capitalize">{provider.name}</h3>
-                          <p className="text-[10px] text-slate-400 font-medium">{provider.api_url}</p>
+                          <h3 className="font-bold text-slate-800 capitalize flex items-center gap-2">
+                            {provider.name}
+                            <div className={`w-2 h-2 rounded-full ${provider.status === 'online' ? 'bg-green-500 shadow-[0_0_8px_rgba(34,197,94,0.4)]' : 'bg-red-400'} transition-all duration-500`} title={provider.status === 'online' ? 'Conectado' : 'Desconectado'} />
+                            {llmConfig.active.provider === provider.name && (
+                              <span className="text-[9px] bg-blue-50 text-blue-600 border border-blue-100 px-1.5 py-0.5 rounded-full font-bold uppercase tracking-wider ml-1">Ativo</span>
+                            )}
+                            <div className="flex items-center gap-1">
+                              <button 
+                                onClick={() => {
+                                  setEditingProvider(provider);
+                                  setIsAddingProvider(true);
+                                  setNewProvider({
+                                    name: provider.name,
+                                    api_url: provider.api_url || '',
+                                    api_key: provider.api_key || '',
+                                    env_api_key: provider.env_api_key || '',
+                                    sequential: provider.sequential || false
+                                  });
+                                }}
+                                className="p-1 hover:bg-blue-50 text-slate-300 hover:text-blue-500 rounded transition-all"
+                                title={t('edit')}
+                              >
+                                <Edit3 size={12} />
+                              </button>
+                              <button 
+                                onClick={() => handleDeleteProvider(provider.name)}
+                                className="p-1 hover:bg-red-50 text-slate-300 hover:text-red-500 rounded transition-all"
+                                title={t('delete')}
+                              >
+                                <Trash2 size={12} />
+                              </button>
+                            </div>
+                          </h3>
+                          <div className="flex items-center gap-2">
+                            <p className="text-[10px] text-slate-400 font-medium">{provider.api_url || 'Default URL'}</p>
+                            {provider.sequential && (
+                              <span className="text-[9px] bg-blue-50 text-blue-600 px-1.5 py-0.5 rounded-full font-bold flex items-center gap-1">
+                                <RefreshCw size={8} className="animate-spin-slow" />
+                                {t('sequential_mode')}
+                              </span>
+                            )}
+                          </div>
                         </div>
                       </div>
                       <div className="flex items-center gap-2">
@@ -2717,7 +3322,6 @@ function App() {
                                 method: 'POST',
                                 body: JSON.stringify({ name: provider.name, enabled: !provider.enabled })
                               });
-                              // Atualiza localmente
                               setLlmConfig(prev => ({
                                 ...prev,
                                 providers: prev.providers.map(p => 
@@ -2738,54 +3342,236 @@ function App() {
                           {provider.enabled ? t('active') : t('inactive')}
                         </button>
                       </div>
-
                     </div>
 
                     <div className="grid grid-cols-1 gap-2">
                       {provider.models.map(model => {
                         const isActive = llmConfig.active.provider === provider.name && llmConfig.active.model === model.name;
                         return (
-                          <button
-                            key={model.name}
-                            disabled={!provider.enabled || !model.enabled}
-                            onClick={async () => {
-                              try {
-                                await apiRequest(`/llm/active`, {
-                                  method: 'POST',
-                                  body: JSON.stringify({ provider: provider.name, model: model.name })
-                                });
-                                // Atualiza localmente para feedback imediato
-                                setLlmConfig(prev => ({
-                                  ...prev,
-                                  active: { provider: provider.name, model: model.name }
-                                }));
-                                checkLlmStatus();
-                              } catch (err) {
-                                setLogs(prev => [...prev, { id: Date.now(), msg: t('change_model_error'), type: 'error' }]);
-                              }
-                            }}
-                            className={`flex items-center justify-between p-3 rounded-xl border transition-all ${
-                              isActive 
-                                ? 'border-blue-500 bg-blue-50/50 ring-2 ring-blue-500/20' 
-                                : 'border-slate-100 hover:border-blue-200 bg-white'
-                            } disabled:opacity-50 disabled:cursor-not-allowed`}
-                          >
-                            <div className="flex items-center gap-3">
-                              <div className={`w-2 h-2 rounded-full ${isActive ? 'bg-blue-500 animate-pulse' : 'bg-slate-200'}`} />
-                              <div className="text-left">
-                                <p className={`text-xs font-bold ${isActive ? 'text-blue-700' : 'text-slate-700'}`}>{model.label}</p>
-                                <p className="text-[10px] text-slate-400 font-mono">{model.name}</p>
+                          <div key={model.name} className="group relative flex items-center gap-2">
+                            <button
+                              disabled={!provider.enabled || !model.enabled}
+                              onClick={async () => {
+                                try {
+                                  await apiRequest(`/llm/active`, {
+                                    method: 'POST',
+                                    body: JSON.stringify({ provider: provider.name, model: model.name })
+                                  });
+                                  setLlmConfig(prev => ({
+                                    ...prev,
+                                    active: { provider: provider.name, model: model.name }
+                                  }));
+                                  checkLlmStatus();
+                                } catch (err) {
+                                  setLogs(prev => [...prev, { id: Date.now(), msg: t('change_model_error'), type: 'error' }]);
+                                }
+                              }}
+                              className={`flex-1 flex items-center justify-between p-3 rounded-xl border transition-all ${
+                                isActive 
+                                  ? 'border-blue-500 bg-blue-50/50 ring-2 ring-blue-500/20' 
+                                  : 'border-slate-100 hover:border-blue-200 bg-white'
+                              } disabled:opacity-50 disabled:cursor-not-allowed`}
+                            >
+                              <div className="flex items-center gap-3">
+                                <div className={`w-2 h-2 rounded-full ${isActive ? 'bg-blue-500 animate-pulse' : 'bg-slate-200'}`} />
+                                <div className="text-left">
+                                  <p className={`text-xs font-bold ${isActive ? 'text-blue-700' : 'text-slate-700'}`}>{model.label}</p>
+                                  <div className="flex items-center gap-2">
+                                    <p className="text-[10px] text-slate-400 font-mono">{model.name}</p>
+                                    <span className="text-[9px] bg-slate-100 px-1 rounded text-slate-500">
+                                      {formatContext(model.context).val}{formatContext(model.context).unit}
+                                    </span>
+                                  </div>
+                                </div>
                               </div>
+                              {isActive && <CheckCircle2 size={16} className="text-blue-500" />}
+                            </button>
+                            <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-all">
+                              <button 
+                                onClick={() => {
+                                  setEditingModel({ providerName: provider.name, model });
+                                  setIsAddingModelFor(provider.name);
+                                  setNewModel({
+                                    name: model.name,
+                                    label: model.label || model.name,
+                                    context: model.context
+                                  });
+                                  const { val, unit } = formatContext(model.context);
+                                  setContextValue(val);
+                                  setContextUnit(unit);
+                                }}
+                                className="p-2 hover:bg-blue-50 text-slate-300 hover:text-blue-500 rounded-lg transition-all"
+                                title={t('edit')}
+                              >
+                                <Edit3 size={14} />
+                              </button>
+                              <button 
+                                onClick={() => handleDeleteModel(provider.name, model.name)}
+                                className="p-2 hover:bg-red-50 text-slate-300 hover:text-red-500 rounded-lg transition-all"
+                                title={t('delete')}
+                              >
+                                <Trash2 size={14} />
+                              </button>
                             </div>
-                            {isActive && <CheckCircle2 size={16} className="text-blue-500" />}
-                          </button>
+                          </div>
                         );
                       })}
+
+                      {isAddingModelFor === provider.name ? (
+                        <div className="p-3 bg-white border border-blue-200 rounded-xl shadow-sm mt-2 space-y-3">
+                          <h4 className="text-[10px] font-black uppercase text-slate-400 tracking-widest px-1">
+                            {editingModel ? t('edit_model') : t('add_model')}
+                          </h4>
+                          <input 
+                            type="text" 
+                            placeholder={t('model_name')}
+                            value={newModel.name}
+                            readOnly={!!editingModel}
+                            onChange={(e) => setNewModel({...newModel, name: e.target.value})}
+                            className={`w-full bg-slate-50 border border-slate-200 rounded-lg p-2 text-xs ${editingModel ? 'opacity-60 cursor-not-allowed' : ''}`}
+                          />
+                          <input 
+                            type="text" 
+                            placeholder={t('model_label')}
+                            value={newModel.label}
+                            onChange={(e) => setNewModel({...newModel, label: e.target.value})}
+                            className="w-full bg-slate-50 border border-slate-200 rounded-lg p-2 text-xs"
+                          />
+                          <div className="flex gap-2">
+                            <input 
+                              type="number" 
+                              placeholder={t('context_window')}
+                              value={contextValue}
+                              onChange={(e) => {
+                                const val = e.target.value;
+                                setContextValue(val);
+                                setNewModel({...newModel, context: parseContext(val, contextUnit)});
+                              }}
+                              className="flex-1 bg-slate-50 border border-slate-200 rounded-lg p-2 text-xs"
+                            />
+                            <select 
+                              value={contextUnit}
+                              onChange={(e) => {
+                                const unit = e.target.value;
+                                setContextUnit(unit);
+                                setNewModel({...newModel, context: parseContext(contextValue, unit)});
+                              }}
+                              className="bg-slate-50 border border-slate-200 rounded-lg px-2 text-xs font-bold"
+                            >
+                              <option value="K">K</option>
+                              <option value="M">M</option>
+                            </select>
+                          </div>
+                          <div className="flex gap-2 justify-end">
+                            <button 
+                              onClick={() => {
+                                setIsAddingModelFor(null);
+                                setEditingModel(null);
+                                setNewModel({ name: '', label: '', context: 128000 });
+                              }} 
+                              className="px-3 py-1.5 text-xs text-slate-500 hover:bg-slate-100 rounded-lg"
+                            >
+                              {t('cancel')}
+                            </button>
+                            <button 
+                              onClick={handleAddModel} 
+                              className="px-3 py-1.5 text-xs bg-blue-600 text-white hover:bg-blue-700 rounded-lg font-bold"
+                            >
+                              {editingModel ? t('update') : t('add')}
+                            </button>
+                          </div>
+                        </div>
+                      ) : (
+                        <button 
+                          onClick={() => { 
+                            setIsAddingModelFor(provider.name); 
+                            setNewModel({ name: '', label: '', context: 128000 });
+                            setContextValue(128);
+                            setContextUnit('K');
+                          }}
+                          className="flex items-center justify-center gap-1 p-2 rounded-xl border border-dashed border-slate-300 text-slate-400 hover:text-blue-500 hover:border-blue-300 hover:bg-blue-50/50 transition-all text-xs font-medium"
+                        >
+                          <Plus size={14} /> {t('add_model')}
+                        </button>
+                      )}
                     </div>
                   </div>
                 ))}
-              </div>
 
+              </div>
+              
+              {isAddingProvider ? (
+                <div className="p-6 border-t border-slate-100 bg-slate-50">
+                  <h3 className="font-bold text-slate-800 mb-4">{editingProvider ? t('edit_provider') : t('add_provider')}</h3>
+                  <div className="space-y-3">
+                    <input 
+                      type="text" 
+                      placeholder={t('provider_name')}
+                      value={newProvider.name}
+                      readOnly={!!editingProvider}
+                      onChange={(e) => setNewProvider({...newProvider, name: e.target.value})}
+                      className={`w-full bg-white border border-slate-200 rounded-lg p-2 text-sm ${editingProvider ? 'opacity-60 cursor-not-allowed' : ''}`}
+                    />
+                    <input 
+                      type="text" 
+                      placeholder={t('api_url')}
+                      value={newProvider.api_url}
+                      onChange={(e) => setNewProvider({...newProvider, api_url: e.target.value})}
+                      className="w-full bg-white border border-slate-200 rounded-lg p-2 text-sm"
+                    />
+                    <input 
+                      type="password" 
+                      placeholder={t('api_key')}
+                      value={newProvider.api_key}
+                      onChange={(e) => setNewProvider({...newProvider, api_key: e.target.value})}
+                      className="w-full bg-white border border-slate-200 rounded-lg p-2 text-sm"
+                    />
+                    <input 
+                      type="text" 
+                      placeholder={t('env_api_key')}
+                      value={newProvider.env_api_key}
+                      onChange={(e) => setNewProvider({...newProvider, env_api_key: e.target.value})}
+                      className="w-full bg-white border border-slate-200 rounded-lg p-2 text-sm"
+                    />
+                    <div className="flex items-center gap-2">
+                      <input
+                        type="checkbox"
+                        checked={newProvider.sequential}
+                        onChange={(e) => setNewProvider({...newProvider, sequential: e.target.checked})}
+                        className="rounded border-slate-300"
+                      />
+                      <span className="text-xs text-slate-600">{t('sequential_mode')}</span>
+                    </div>
+                    <div className="flex gap-2 justify-end pt-2">
+                      <button 
+                        onClick={() => {
+                          setIsAddingProvider(false);
+                          setEditingProvider(null);
+                          setNewProvider({ name: '', api_url: '', api_key: '', env_api_key: '', sequential: false });
+                        }} 
+                        className="px-4 py-2 text-sm text-slate-500 hover:bg-slate-200 rounded-xl font-medium"
+                      >
+                        {t('cancel')}
+                      </button>
+                      <button 
+                        onClick={handleAddProvider} 
+                        className="px-4 py-2 text-sm bg-blue-600 text-white hover:bg-blue-700 rounded-xl font-bold"
+                      >
+                        {editingProvider ? t('update') : t('add')}
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              ) : (
+                <div className="p-4 border-t border-slate-100 bg-white">
+                  <button 
+                    onClick={() => { setIsAddingProvider(true); setNewProvider({ name: '', api_url: '', api_key: '', env_api_key: '', sequential: false }); }}
+                    className="w-full flex items-center justify-center gap-2 p-3 rounded-xl border border-dashed border-slate-300 text-slate-500 hover:text-blue-600 hover:border-blue-400 hover:bg-blue-50 transition-all text-sm font-bold"
+                  >
+                    <Plus size={18} /> {t('add_provider')}
+                  </button>
+                </div>
+              )}
               <div className="p-6 border-t border-slate-100 bg-slate-50/50 flex justify-end">
                 <button 
                   onClick={() => setIsAiSettingsOpen(false)}
@@ -2844,6 +3630,15 @@ function App() {
           </div>
         )}
       </main>
+
+      <TaskSpecModal 
+        isOpen={taskSpecModal.isOpen} 
+        onClose={() => setTaskSpecModal({ isOpen: false, taskId: null, sprintId: null })}
+        taskId={taskSpecModal.taskId}
+        sprintId={taskSpecModal.sprintId}
+        projectId={formData.path}
+        language={language}
+      />
 
       {/* Modern styles for Scrollbar */}
       <style dangerouslySetInnerHTML={{ __html: `

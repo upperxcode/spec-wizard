@@ -40,6 +40,8 @@ func (o *Orchestrator) GetLLMClient(config ProjectConfig) (*llm.LLMClient, error
 			if model == "" {
 				model = m.Name
 			}
+			config.LLM.Sequential = p.Sequential
+			config.LLM.UseCLI = p.UseCLI
 		}
 	}
 
@@ -47,9 +49,12 @@ func (o *Orchestrator) GetLLMClient(config ProjectConfig) (*llm.LLMClient, error
 		return nil, fmt.Errorf("nenhum provedor de IA configurado (global ou no projeto)")
 	}
 
-	fmt.Printf("✅ [Orchestrator] Cliente resolvido: %s (%s)\n", providerName, model)
+	fmt.Printf("✅ [Orchestrator] Cliente resolvido: %s (%s, UseCLI: %v)\n", providerName, model, config.LLM.UseCLI)
 
-	provider := llm.NewProvider(providerName, baseURL, apiKey, envKey)
+	provider, err := llm.NewProvider(providerName, baseURL, apiKey, envKey, config.LLM.Sequential, config.LLM.UseCLI, o.Plugins)
+	if err != nil {
+		return nil, err
+	}
 	return llm.NewLLMClient(provider, model, o.Tools), nil
 }
 
@@ -87,7 +92,7 @@ func (o *Orchestrator) OrchestrateIntelligence(plugin *registry.ExpertPlugin, ra
 		return
 	}
 
-	finalPrompt := factory.GenerateAnchoringPrompt("Flutter", technicalFacts, rawFileContent)
+	finalPrompt := factory.GenerateAnchoringPrompt(plugin.Language, technicalFacts, rawFileContent)
 
 	// TODO: Obter config real, por enquanto criamos uma vazia para disparar o fallback
 	llmLocal, err := o.GetLLMClient(ProjectConfig{})
@@ -122,9 +127,11 @@ func (o *Orchestrator) InterpretExistingProject(lang string, plugin *registry.Ex
 		"language":     lang,
 	}
 
+	fmt.Printf("📡 [Analyzer] Solicitando análise técnica ao Expert %s...\n", lang)
 	technicalFacts, err := client.CallExpert(plugin, "AnalyzeCodebase", expertPayload)
 	if err != nil {
-		return nil, err
+		fmt.Printf("❌ [Analyzer] Erro no Expert Call: %v\n", err)
+		return nil, fmt.Errorf("erro no plugin expert: %v", err)
 	}
 
 	var inferred map[string]interface{}
@@ -141,18 +148,18 @@ func (o *Orchestrator) InterpretExistingProject(lang string, plugin *registry.Ex
 
 	llmLocal, err := o.GetLLMClient(ProjectConfig{UserLanguage: userLang})
 	if err != nil {
+		fmt.Printf("❌ [Analyzer] Erro ao obter cliente LLM: %v\n", err)
 		return nil, err
 	}
+
+	fmt.Printf("📡 [Analyzer] Solicitando interpretação à IA (Modelo: %s)...\n", llmLocal.Model)
 	aiResponse, err := llmLocal.Ask(interpretPrompt)
 	if err != nil {
-		return nil, err
+		fmt.Printf("❌ [Analyzer] Erro na resposta da IA: %v\n", err)
+		return nil, fmt.Errorf("erro na comunicação com a IA: %v", err)
 	}
 	if aiResponse == "" {
 		return nil, fmt.Errorf("a IA retornou uma resposta vazia")
-	}
-
-	if err != nil {
-		return nil, err
 	}
 
 	cleaned := CleanJSONResponse(aiResponse)
@@ -170,11 +177,29 @@ func (o *Orchestrator) InterpretExistingProject(lang string, plugin *registry.Ex
 	}
 
 	for _, field := range expertFields {
+		// Tenta camelCase e snake_case (para compatibilidade com Experts Go/Flutter)
+		snakeField := toSnakeCase(field)
 		if val, ok := inferred[field]; ok && !isEmpty(val) {
 			finalResult[field] = val
-		} else if val, ok := aiSuggestion[field]; ok {
+		} else if val, ok := inferred[snakeField]; ok && !isEmpty(val) {
+			finalResult[field] = val
+		} else if val, ok := aiSuggestion[field]; ok && !isEmpty(val) {
 			finalResult[field] = val
 		}
+	}
+
+	// Se ainda não temos projectName, tentamos inferir do diretório ou metadata
+	if isEmpty(finalResult["projectName"]) {
+		if meta, ok := technicalFacts["metadata"].(map[string]interface{}); ok {
+			if name, ok := meta["project_name"].(string); ok && !isEmpty(name) {
+				finalResult["projectName"] = name
+			}
+		}
+	}
+
+	// Fallback final: Nome do diretório
+	if isEmpty(finalResult["projectName"]) {
+		finalResult["projectName"] = filepath.Base(o.ProjectPath)
 	}
 
 	for k, v := range aiSuggestion {

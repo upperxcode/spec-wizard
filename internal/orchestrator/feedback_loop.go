@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"spec-wizard/internal/llm"
+	"spec-wizard/internal/registry"
 	"strings"
 )
 
@@ -18,6 +19,7 @@ type FeedbackLoop struct {
 	UserLanguage string
 	LLMClient    *llm.LLMClient
 	Assembler    *ContextAssembler
+	Plugin       *registry.ExpertPlugin
 }
 
 // ExecutionAttempt representa uma tentativa de execução de uma tarefa
@@ -32,7 +34,7 @@ type ExecutionAttempt struct {
 	Diff               string // Novo campo para o diff git
 }
 
-func NewFeedbackLoop(projectPath, language, userLanguage string, llmClient *llm.LLMClient) *FeedbackLoop {
+func NewFeedbackLoop(projectPath, language, userLanguage string, llmClient *llm.LLMClient, plugin *registry.ExpertPlugin) *FeedbackLoop {
 	return &FeedbackLoop{
 		MaxAttempts:  3,
 		ProjectPath:  projectPath,
@@ -40,6 +42,7 @@ func NewFeedbackLoop(projectPath, language, userLanguage string, llmClient *llm.
 		UserLanguage: userLanguage,
 		LLMClient:    llmClient,
 		Assembler:    NewContextAssembler(projectPath),
+		Plugin:       plugin,
 	}
 }
 
@@ -69,8 +72,8 @@ func (fl *FeedbackLoop) ExecuteTaskWithFeedback(ctx context.Context, taskCtx *Ta
 
 	// 2. Valida o código gerado
 	fmt.Println("🔍 Validando código gerado...")
-	sensor := NewSensorManager(fl.ProjectPath, fl.Language)
-	if err := sensor.RunValidation(); err != nil {
+	sensor := NewSensorManager(fl.ProjectPath, fl.Language, fl.Plugin)
+	if err := sensor.RunValidation(nil); err != nil {
 		return nil, fmt.Errorf("erro ao rodar sensores: %v", err)
 	}
 
@@ -109,8 +112,8 @@ func (fl *FeedbackLoop) ExecuteTaskWithFeedback(ctx context.Context, taskCtx *Ta
 
 		// Valida novamente
 		fmt.Println("🔍 Revalidando código corrigido...")
-		sensor := NewSensorManager(fl.ProjectPath, fl.Language)
-		if err := sensor.RunValidation(); err != nil {
+		sensor := NewSensorManager(fl.ProjectPath, fl.Language, fl.Plugin)
+		if err := sensor.RunValidation(nil); err != nil {
 			fmt.Printf("❌ Sensores falharam na tentativa %d\n", attempt.AttemptNumber)
 			continue
 		}
