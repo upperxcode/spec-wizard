@@ -208,7 +208,7 @@ func (o *Orchestrator) ExecuteTaskWithTDD(ctx context.Context, sprintID, taskID 
 	var lastResponse string
 
 	for attempt := 1; attempt <= maxAttempts; attempt++ {
-		fmt.Printf("\n🔄 [TDD LOOP] Tentativa %d de %d para a tarefa: %s\n", attempt, maxAttempts, task.Title)
+		logger.Info("🔄 [TDD LOOP] Iniciando tentativa", "attempt", attempt, "max", maxAttempts, "task", task.Title)
 		logger.Info(fmt.Sprintf("🔄 [Harness] Tentativa %d de %d", attempt, maxAttempts))
 
 		// Cada tentativa do TDD tem seu próprio timeout de 600s (fôlego renovado)
@@ -332,10 +332,10 @@ func (o *Orchestrator) ExecuteTaskWithTDD(ctx context.Context, sprintID, taskID 
 		task.TestStatus = "failure"
 		// Se houve arquivos criados, eles se tornam referência para a correção
 		if len(implementationFiles) > 0 {
-			task.Files = uniqueStrings(append(task.Files, implementationFiles...))
+			task.Files = mergeFiles(task.Files, implementationFiles)
 		}
 		if len(testFiles) > 0 {
-			task.TestFiles = uniqueStrings(append(task.TestFiles, testFiles...))
+			task.TestFiles = mergeFiles(task.TestFiles, testFiles)
 		}
 
 		logger.Warn("🔁 [Harness] Preparando próxima tentativa com feedback de erro", "error_len", len(lastLogs))

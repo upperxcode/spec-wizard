@@ -1,0 +1,11 @@
+#!/bin/fish
+
+echo "🏗️ Iniciando Build Completo..."
+
+./scripts/run build || exit 1
+./scripts/wizard-cli.sh install || exit 1
+go build -o bin/mcp-wizard cmd/mcp-server/main.go || exit 1
+cp bin/mcp-wizard ~/.local/bin/ || exit 1
+./scripts/install_npm.sh || exit 1
+
+echo "✅ Sistema compilado e instalado com sucesso!"

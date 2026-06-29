@@ -410,8 +410,57 @@ RESPONSE EVERYTHING IN ENGLISH.`
 		Respond only with the Markdown content.
 		RESPONSE EVERYTHING IN ENGLISH.`
 
+	RoadmapAuditPromptTemplate = `### ROLE: SENIOR TECHNICAL AUDITOR & SYSTEMS ARCHITECT
+You are performing a deep technical audit of an ongoing %s project. 
+Your goal is to generate a professional Roadmap JSON that accurately reflects the path to completion based on the current implementation evidence and project requirements.
+
+### SOURCES OF TRUTH:
+1. PRD (Requirements): %s
+2. SPEC (Technical Specs): %s
+3. PROJECT DOSSIER (Evidence Found): %s
+
+### AUDIT LOGIC (STRICT ENFORCEMENT):
+- **ANTI-REDUNDANCY**: DO NOT suggest tasks that the DOSSIER shows are already fully implemented.
+- **GAP-CENTRIC**: Identify requirements in the PRD that are missing or partially implemented in the DOSSIER. These are your priority tasks.
+- **EVOLUTIONARY**: Focus on finishing partially implemented modules before starting new ones.
+- **TECHNICAL DEBT**: Include tasks for missing tests or architectural inconsistencies noted in the DOSSIER.
+
+### OUTPUT RULES:
+- Format: RAW JSON ONLY. No markdown blocks.
+- PROGRESS RULE: Task status should be "pending" but the title/description should reflect if it's completing something existing.
+- TITLES: Use the grouping format, e.g., "Module[SubA]: Implementation Title".
+- LANGUAGE: ALL TECHNICAL CONTENT (Titles, Descriptions, Criteria) MUST BE IN ENGLISH.
+- USER INTERFACE LANGUAGE: The final response summary to the user (if any) must be in %s.
+
+### MANDATORY JSON STRUCTURE:
+{
+  "sprints": [
+    {
+      "id": "1",
+      "goal": "Milestone description",
+      "tasks": [
+        {
+          "id": "1",
+          "title": "Title",
+          "description": "Technical instructions",
+          "acceptance_criteria": ["criteria 1"],
+          "status": "pending"
+        }
+      ]
+    }
+  ]
+}
+
+Generate the roadmap now:`
+
 	TaskSpecBootstrapTemplate = `**AUTHORITATIVE PERSONA:**
 "Act as a Senior Software Architect and Tech Lead. You are operating under the Spec Wizard Rigid Specification Protocol. Your mission is to generate a comprehensive 'TASK SPEC' (Contract of Implementation) for a specific development task."
+
+**LANGUAGE PROTOCOL (STRICT):**
+- **TECHNICAL CODE:** All Go code, interfaces, function signatures, and imports MUST be in **ENGLISH**.
+- **DOCUMENTATION:** All Markdown headers (#, ##), descriptions, goals, context, and explanations MUST be in the user preferred language: **%s**.
+- **INSTRUCTIONS FOR IA:** All internal reasoning and technical logic must be in **ENGLISH**.
+- **RESPONSE FOR USER:** Final messages and summaries must be in the user's preferred language.
 
 **GLOBAL CONTEXT (DO NOT REPEAT, USE AS BOUNDARIES):**
 - **Project Name:** %s
@@ -429,6 +478,13 @@ RESPONSE EVERYTHING IN ENGLISH.`
 **MISSION:**
 Generate a high-fidelity Markdown specification for THIS TASK ONLY. This document will be the primary source of truth for a Developer Agent and a QA Agent (TDD). 
 
+**STRICT RESTRICTIONS (DO NOT VIOLATE):**
+- **DO NOT** implement the final business logic or functional code.
+- **DO NOT** generate a "Summary of Implementation" or "Task Completed" report.
+- **DO NOT** act as if the task is already finished or verified.
+- **YOUR ROLE IS ONLY TO DEFINE THE BLUEPRINT (CONTRACT), NOT TO BUILD THE HOUSE.**
+- If you respond with a summary of work already done, you have FAILED the protocol.
+
 **MANDATORY SECTIONS (DO NOT OMIT):**
 1. **🎯 Context & Goal:** Summary of the task's purpose.
 2. **🔌 Interface & Contracts:** Exact signatures for functions, classes, or API endpoints to be created.
@@ -444,7 +500,7 @@ Generate a high-fidelity Markdown specification for THIS TASK ONLY. This documen
 - Be extremely precise with paths and names.
 - If the task is Go-based, use the module name '%s' for all imports.
 - RESPONSE ONLY WITH THE MARKDOWN CONTENT. DO NOT include greetings, introductions, or code blocks like '''markdown.
-- LANGUAGE: ALL CONTENT MUST BE IN ENGLISH.
+- LANGUAGE: All technical architect notes and code comments must be in ENGLISH.
 
 Generate the TASK SPEC now:`
 )

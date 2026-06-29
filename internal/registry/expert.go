@@ -14,13 +14,15 @@ type TestConfig struct {
 }
 
 type ExpertPlugin struct {
-	ID           string      `yaml:"id" json:"id"`
-	Endpoint     string      `yaml:"endpoint" json:"endpoint"`
-	Triggers     []string    `yaml:"triggers" json:"triggers"`
-	Language     string      `yaml:"language" json:"language"` // Adicionado para suporte imperativo
-	StartCommand      string      `yaml:"start_command" json:"start_command"`
+	ID                 string      `yaml:"id" json:"id"`
+	Name               string      `yaml:"name" json:"name"`
+	Description        string      `yaml:"description" json:"description"`
+	Endpoint           string      `yaml:"endpoint" json:"endpoint"`
+	Triggers           []string    `yaml:"triggers" json:"triggers"`
+	Language           string      `yaml:"language" json:"language"` // Adicionado para suporte imperativo
+	StartCommand       string      `yaml:"start_command" json:"start_command"`
 	DependencyEndpoint string      `yaml:"dependency_endpoint" json:"dependency_endpoint"` // Novo: para consultar versões
-	TestConfig        *TestConfig `yaml:"test_config" json:"test_config"`
+	TestConfig         *TestConfig `yaml:"test_config" json:"test_config"`
 }
 
 // LoadExperts carrega a lista de plugins de um ou mais arquivos de configuração e os mescla

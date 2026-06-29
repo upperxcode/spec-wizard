@@ -45,6 +45,7 @@ type GlobalConfig struct {
 	Projects      []ProjectEntry   `json:"projects"`
 	ActiveProject string           `json:"active_project"`
 	Port          string           `json:"port"`
+	LogDir        string           `json:"log_dir"`
 }
 
 type Engine struct {
@@ -130,16 +131,9 @@ func (e *Engine) ReloadConfig() error {
 }
 
 func (e *Engine) SaveConfig() error {
-	dir := filepath.Dir(e.path)
-	if err := os.MkdirAll(dir, 0755); err != nil {
-		return err
-	}
-
-	data, err := json.MarshalIndent(e.cfg, "", "  ")
-	if err != nil {
-		return err
-	}
-	return os.WriteFile(e.path, data, 0644)
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	return e.saveConfigLocked()
 }
 
 // AddOrUpdateProvider adds a new LLM provider or updates an existing one
@@ -378,6 +372,13 @@ func (e *Engine) SetTheme(name string) error {
 	return e.SaveConfig()
 }
 
+func (e *Engine) SetLogDir(path string) error {
+	e.mu.Lock()
+	e.cfg.LogDir = path
+	e.mu.Unlock()
+	return e.SaveConfig()
+}
+
 func (e *Engine) SetProviderStatus(name string, enabled bool) error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
@@ -400,9 +401,47 @@ func (e *Engine) SetActiveProject(path string) error {
 }
 
 func (e *Engine) GetProjects() []ProjectEntry {
+	e.ValidateProjects() // Limpa órfãos antes de retornar
 	e.mu.RLock()
 	defer e.mu.RUnlock()
 	return e.cfg.Projects
+}
+
+func (e *Engine) ValidateProjects() error {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	var validProjects []ProjectEntry
+	changed := false
+
+	for _, p := range e.cfg.Projects {
+		if _, err := os.Stat(p.Path); err == nil {
+			validProjects = append(validProjects, p)
+		} else {
+			changed = true
+			fmt.Printf("🧹 [Engine] Removendo projeto órfão detectado: %s (%s)\n", p.Name, p.Path)
+		}
+	}
+
+	if changed {
+		e.cfg.Projects = validProjects
+		return e.saveConfigLocked()
+	}
+	return nil
+}
+
+// saveConfigLocked salva a config sem dar lock (assume que quem chama já tem o lock)
+func (e *Engine) saveConfigLocked() error {
+	dir := filepath.Dir(e.path)
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return err
+	}
+
+	data, err := json.MarshalIndent(e.cfg, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(e.path, data, 0644)
 }
 
 func (e *Engine) AddProject(name, path string) error {

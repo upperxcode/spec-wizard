@@ -64,13 +64,18 @@ function clean_port() {
     fi
 
     echo -e "${YELLOW}🧹 Limpando porta $PORT...${NC}"
-    PID=$(lsof -t -i:$PORT)
+    # 🧙‍♂️ Filtra apenas processos em estado LISTEN para não matar o navegador conectado
+    PID=$(lsof -t -sTCP:LISTEN -i:$PORT)
     if [ -n "$PID" ]; then
-        echo -e "${RED}Encontrado processo $PID na porta $PORT. Finalizando...${NC}"
-        kill -9 $PID
+        echo -e "${YELLOW}Encontrado servidor (PID $PID) na porta $PORT. Finalizando...${NC}"
+        kill $PID
+        sleep 1
+        # Verifica se ainda está vivo
+        PID_STILL_ALIVE=$(lsof -t -sTCP:LISTEN -i:$PORT)
+        if [ -n "$PID_STILL_ALIVE" ]; then
+            kill -9 $PID_STILL_ALIVE
+        fi
         echo -e "${GREEN}Porta $PORT liberada!${NC}"
-    else
-        echo -e "${BLUE}Porta $PORT já está livre.${NC}"
     fi
 }
 
@@ -88,7 +93,7 @@ function run_all() {
     fi
 
     clean_port $API_PORT
-    clean_port 5173
+    # clean_port 5173 # Removido para evitar matar o navegador se a UI estiver rodando em dev
     
     echo -e "${GREEN}🚀 Servidor Go (Porta 10808)...${NC}"
     build_and_install
@@ -177,11 +182,19 @@ function build_and_install() {
     echo -e "${YELLOW}🏗️ Compilando e Instalando Globalmente...${NC}"
     cd "$GO_SERVER_DIR" || exit
     go build -o server cmd/main.go
+    go build -o mcp-wizard cmd/mcp-server/main.go
     # Garante que o diretório existe e instala no path do usuário
     mkdir -p "$HOME/.local/bin"
     cp server "$HOME/.local/bin/spec-wizard"
+    
+    # Tenta matar processos antigos para evitar "text file busy"
+    pkill -f mcp-wizard || true
+    pkill -f "bin/wz" || true
+    
+    cp mcp-wizard "$HOME/.local/bin/wz"
     echo -e "${GREEN}✅ Build e Instalação concluídos!${NC}"
-    echo -e "📍 Global: ${BLUE}$HOME/.local/bin/spec-wizard${NC}"
+    echo -e "📍 Server: ${BLUE}$HOME/.local/bin/spec-wizard${NC}"
+    echo -e "📍 MCP (wz): ${BLUE}$HOME/.local/bin/wz${NC}"
     sync_experts
 }
 
@@ -192,10 +205,11 @@ function sync_experts() {
     mkdir -p "$TARGET_DIR/logs"
     
     cp config/experts.yaml "$TARGET_DIR/experts.yaml"
+    cp config/architectures.yaml "$TARGET_DIR/architectures.yaml"
     cp scripts/*.py "$TARGET_DIR/scripts/"
     chmod +x "$TARGET_DIR/scripts/"*.py
     
-    echo -e "${GREEN}✅ Experts sincronizados em $TARGET_DIR${NC}"
+    echo -e "${GREEN}✅ Experts e Arquiteturas sincronizados em $TARGET_DIR${NC}"
 }
 
 function build_server() {

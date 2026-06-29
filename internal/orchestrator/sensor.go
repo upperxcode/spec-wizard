@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"spec-wizard/internal/logger"
 	"spec-wizard/internal/registry"
 	"strings"
 )
@@ -37,7 +38,7 @@ func NewSensorManager(projectPath, language string, plugin *registry.ExpertPlugi
 
 // RunValidation executa os sensores apropriados para a linguagem
 func (sm *SensorManager) RunValidation(touchedFiles []string) error {
-	fmt.Printf("🔍 Executando sensores de validação para %s (Focado em %d arquivos)...\n", sm.Language, len(touchedFiles))
+	logger.Info("🔍 Executando sensores de validação", "lang", sm.Language, "touched_count", len(touchedFiles))
 
 	// Identifica pacotes afetados
 	affectedPkgs := make(map[string]bool)
@@ -55,7 +56,7 @@ func (sm *SensorManager) RunValidation(touchedFiles []string) error {
 
 	// 1. Tenta usar instrução de testes definida no plugin (MCP)
 	if sm.Plugin != nil && sm.Plugin.TestConfig != nil && sm.Plugin.TestConfig.Command != "" {
-		fmt.Printf("📦 Usando configuração de testes do Expert %s\n", sm.Plugin.ID)
+		logger.Info("📦 Usando configuração de testes do Expert", "expert", sm.Plugin.ID)
 		sm.runSensor("expert_test_command", "bash", []string{"-c", sm.Plugin.TestConfig.Command})
 		return nil
 	}
@@ -151,11 +152,11 @@ func (sm *SensorManager) runSensor(sensorName, command string, args []string) {
 		result.Status = "fail"
 		result.Message = fmt.Sprintf("Sensor falhou: %v", err)
 		result.ErrorLog = outputStr
-		fmt.Printf("❌ %s FALHOU\n", sensorName)
+		logger.Warn("❌ Sensor falhou", "sensor", sensorName)
 	} else {
 		result.Status = "pass"
 		result.Message = fmt.Sprintf("Validação passou para %s", sensorName)
-		fmt.Printf("✅ %s PASSOU\n", sensorName)
+		logger.Info("✅ Sensor passou", "sensor", sensorName)
 	}
 
 	sm.SensorResults = append(sm.SensorResults, result)

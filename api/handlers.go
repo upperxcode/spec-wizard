@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"spec-wizard/config"
 	"spec-wizard/internal/adapters"
+	"spec-wizard/internal/governance"
 	"spec-wizard/internal/llm"
 	"spec-wizard/internal/logger"
 	"spec-wizard/internal/orchestrator"
@@ -35,53 +36,24 @@ func (h *APIHandler) HealthCheck(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// GetLLMClient cria um cliente configurado baseado nas configurações globais ou do projeto
+// GetLLMClient cria um cliente configurado baseado exclusivamente nas configurações globais
 func (h *APIHandler) GetLLMClient(projectCfg orchestrator.ProjectConfig) (*llm.LLMClient, error) {
-	providerName := projectCfg.LLM.Provider
-	baseURL := projectCfg.LLM.BaseURL
-	apiKey := projectCfg.LLM.APIKey
-	envKey := projectCfg.LLM.EnvAPIKey
-	model := projectCfg.LLM.Model
-	sequential := projectCfg.LLM.Sequential
-
-	fmt.Printf("🔍 [API] Resolvendo cliente LLM (Proj: %s, Model: %s)\n", providerName, model)
-
-	// Fallback para Engine se não houver config específica ou se estiver incompleta
-	if (providerName == "" || apiKey == "") && h.Engine != nil {
-		fmt.Println("ℹ️ [API] Configuração do projeto incompleta, buscando na Engine Global...")
-		p, m, err := h.Engine.GetActiveModel()
-		if err == nil {
-			if providerName == "" {
-				providerName = p.Name
-			}
-			if baseURL == "" {
-				baseURL = p.APIURL
-			}
-			if apiKey == "" {
-				apiKey = p.APIKey
-			}
-			envKey = p.EnvAPIKey
-			if model == "" {
-				model = m.Name
-			}
-			if !sequential {
-				sequential = p.Sequential
-			}
-			if !projectCfg.LLM.UseCLI {
-				projectCfg.LLM.UseCLI = p.UseCLI
-			}
-		}
+	if h.Engine == nil {
+		return nil, fmt.Errorf("engine global não inicializada")
 	}
 
-	if providerName == "" {
-		return nil, fmt.Errorf("nenhum provedor de IA configurado (global ou no projeto)")
+	p, m, err := h.Engine.GetActiveModel()
+	if err != nil {
+		return nil, fmt.Errorf("falha ao obter modelo ativo global: %v", err)
 	}
 
-	provider, err := llm.NewProvider(providerName, baseURL, apiKey, envKey, sequential, projectCfg.LLM.UseCLI, h.Plugins)
+	logger.Info("✅ [API] Usando configuração Global", "provider", p.Name, "model", m.Name, "useCLI", p.UseCLI)
+
+	provider, err := llm.NewProvider(p.Name, p.APIURL, p.APIKey, p.EnvAPIKey, p.Sequential, p.UseCLI, h.Plugins)
 	if err != nil {
 		return nil, err
 	}
-	return llm.NewLLMClient(provider, model, nil), nil
+	return llm.NewLLMClient(provider, m.Name, nil), nil
 }
 
 // GET /api/languages - Lista as linguagens com MCP disponível
@@ -135,7 +107,7 @@ func (h *APIHandler) GetPatterns(w http.ResponseWriter, r *http.Request) {
 			// B) Opções estruturadas (arquiteturas, estados, estratégias)
 			options, err := client.GetOptions(expert)
 			if err != nil {
-				fmt.Printf("❌ [GetPatterns] Erro ao buscar opções do Expert %s: %v\n", expert.ID, err)
+				logger.Error("❌ [GetPatterns] Erro ao buscar opções do Expert", err, "id", expert.ID)
 			} else {
 				mapOptions := func(key string, category string) {
 					if list, ok := options[key].([]interface{}); ok {
@@ -164,19 +136,19 @@ func (h *APIHandler) GetPatterns(w http.ResponseWriter, r *http.Request) {
 				if st, ok := options["stack_templates"]; ok {
 					if list, ok := st.([]interface{}); ok {
 						stackTemplates = list
-						fmt.Printf("✅ [GetPatterns] Expert %s forneceu %d templates para %s\n", expert.ID, len(stackTemplates), lang)
+						logger.Info("✅ [GetPatterns] Expert templates carregados", "id", expert.ID, "count", len(stackTemplates), "language", lang)
 					} else {
-						fmt.Printf("⚠️ [GetPatterns] Expert %s retornou stack_templates em formato inválido\n", expert.ID)
+						logger.Warn("⚠️ [GetPatterns] Expert retornou templates em formato inválido", "id", expert.ID)
 					}
 				} else {
-					fmt.Printf("ℹ️ [GetPatterns] Expert %s não possui a chave 'stack_templates'\n", expert.ID)
+					logger.Info("ℹ️ [GetPatterns] Expert sem stack_templates", "id", expert.ID)
 				}
 			}
 		} else {
-			fmt.Printf("❌ [GetPatterns] Falha ao garantir que o Expert %s está rodando: %v\n", expert.ID, err)
+			logger.Error("❌ [GetPatterns] Falha ao garantir Expert rodando", err, "id", expert.ID)
 		}
 	} else {
-		fmt.Printf("ℹ️ [GetPatterns] Nenhum expert encontrado para a linguagem: %s\n", lang)
+		logger.Info("ℹ️ [GetPatterns] Nenhum expert encontrado para a linguagem", "language", lang)
 	}
 
 	// Converter mapa de volta para slice
@@ -269,6 +241,11 @@ func (h *APIHandler) SaveRoadmap(w http.ResponseWriter, r *http.Request) {
 		sendJSONError(w, "Falha ao salvar roadmap: "+cleanMsg, http.StatusInternalServerError)
 		return
 	}
+
+	// Sincroniza o SQLite com as mudanças manuais feitas via UI
+	governance.InitDB(req.Path)
+	// Sincroniza o Banco de Dados SQLite
+	governance.InitDB(req.Path)
 
 	w.WriteHeader(http.StatusOK)
 	w.Write([]byte("Roadmap salvo com sucesso!"))
@@ -380,7 +357,6 @@ func (h *APIHandler) ExecuteTask(w http.ResponseWriter, r *http.Request) {
 	if data, err := os.ReadFile(projectCfgPath); err == nil {
 		var loadedCfg orchestrator.ProjectConfig
 		if err := json.Unmarshal(data, &loadedCfg); err == nil {
-			pConfig.LLM = loadedCfg.LLM
 			pConfig.KnowledgeBase = loadedCfg.KnowledgeBase
 			pConfig.Stack = loadedCfg.Stack
 			pConfig.Roadmap = loadedCfg.Roadmap
@@ -401,7 +377,7 @@ func (h *APIHandler) ExecuteTask(w http.ResponseWriter, r *http.Request) {
 	core.SaveAgentsDocs(pConfig, nil)
 
 	// 6. Executa a tarefa via Harness TDD do Orquestrador (Loop de Auto-correção)
-	fmt.Printf("🔄 Iniciando execução da tarefa %v via Harness TDD...\n", req.TaskID)
+	logger.Info("🔄 Iniciando execução da tarefa via Harness TDD", "id", req.TaskID)
 
 	// Usamos context.Background() em vez de r.Context() para evitar que o fechamento da conexão
 	// pelo browser (timeout do lado do cliente) interrompa o processo de IA em modelos lentos.
@@ -484,10 +460,14 @@ func (h *APIHandler) GetNextHeadlessStep(w http.ResponseWriter, r *http.Request)
 		projectPath = "."
 	}
 
+	// Força sincronização do Banco de Dados para o JSON antes da leitura pelo headless/UI
+	governance.InitDB(projectPath)
+	governance.SyncDBToJSON(projectPath)
+
 	// 1. Lê o sprints.json
 	roadmapPath := filepath.Join(projectPath, ".spec-wizard", "sprints.json")
 	absPath, _ := filepath.Abs(roadmapPath)
-	fmt.Printf("📂 [Headless] Lendo roadmap de: %s\n", absPath)
+	logger.Info("📂 [Headless] Lendo roadmap", "path", absPath)
 	data, err := os.ReadFile(roadmapPath)
 	if err != nil {
 		sendJSONError(w, "Roadmap não encontrado em "+roadmapPath, http.StatusNotFound)
@@ -539,7 +519,46 @@ found:
 		return
 	}
 
-	// 3. Monta o prompt para a tarefa
+	// 3. Verifica se é um pedido de refinamento (IA gera a spec)
+	refine := r.URL.Query().Get("refine") == "true"
+	if refine {
+		logger.Info("🏗️  [Headless] Iniciando REFINAMENTO da tarefa via IA", "taskID", nextTask.ID)
+		o := orchestrator.NewOrchestrator(projectPath, h.Plugins, h.Engine)
+		state, err := o.CheckInitialState()
+		if err != nil {
+			sendJSONError(w, "Erro ao carregar estado do projeto: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+
+		config, ok := state.Config.(orchestrator.ProjectConfig)
+		if !ok {
+			// Fallback para map
+			if m, ok := state.Config.(map[string]interface{}); ok {
+				data, _ := json.Marshal(m)
+				json.Unmarshal(data, &config)
+			}
+		}
+
+		rawResponse, err := o.BootstrapTaskSpec(config, string(nextSprint.ID), string(nextTask.ID))
+		if err != nil {
+			sendJSONError(w, "Falha no refinamento via IA: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"status":      "refined",
+			"sprint_id":   nextSprint.ID,
+			"task_id":     nextTask.ID,
+			"title":       nextTask.Title,
+			"description": nextTask.Description,
+			"prompt":      rawResponse, // A resposta da IA é o novo prompt/spec
+			"instruction": "Refinamento concluído. A especificação técnica foi salva.",
+		})
+		return
+	}
+
+	// 4. Se não for refine, monta o prompt normal (contexto bruto)
 	assembler := orchestrator.NewContextAssembler(absPath)
 	taskContext, err := assembler.AssembleTaskContext(*nextTask, *nextSprint, h.Plugins)
 	if err != nil {
@@ -547,9 +566,30 @@ found:
 		return
 	}
 
+	// [READINESS CHECK] Se for pedido de CODE, valida se a SPEC está presente
+	isCodeRequest := r.URL.Query().Get("code") == "true"
+	if isCodeRequest {
+		// Se a TaskSpec for o placeholder padrão, significa que não houve refinamento
+		if strings.Contains(taskContext.TaskSpec, "[No custom specification found") {
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]interface{}{
+				"status":      "not_ready",
+				"sprint_id":   nextSprint.ID,
+				"task_id":     nextTask.ID,
+				"title":       nextTask.Title,
+				"description": nextTask.Description,
+				"instruction": "⚠️ TAREFA NÃO PRONTA PARA CODIFICAR: Falta a Especificação Técnica (SPEC). Por favor, execute o comando de refinamento primeiro para detalhar os requisitos técnicos.",
+				"prompt":      "A tarefa ainda não foi refinada tecnicamente. Use 'wz refine " + string(nextTask.ID) + "' antes de codificar.",
+			})
+			return
+		}
+		// Injeta flag de codificação no contexto para o assembler saber que deve ser rigoroso
+		taskContext.IsCodingTask = true
+	}
+
 	prompt := assembler.BuildPromptForTask(taskContext)
 
-	// 4. Retorna o pacote "Headless"
+	// 5. Retorna o pacote "Headless"
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{
 		"status":      "pending",
@@ -569,6 +609,10 @@ func (h *APIHandler) GetProjectStatus(w http.ResponseWriter, r *http.Request) {
 		sendJSONError(w, "Caminho é obrigatório", http.StatusBadRequest)
 		return
 	}
+
+	// Garante que o JSON reflete o estado do Banco de Dados para o Dashboard
+	governance.InitDB(path)
+	governance.SyncDBToJSON(path)
 
 	core := orchestrator.NewOrchestrator(path, h.Plugins, h.Engine)
 	state, err := core.CheckInitialState()
@@ -1001,9 +1045,9 @@ func (h *APIHandler) SaveProjectSpec(w http.ResponseWriter, r *http.Request) {
 	}
 	req.Config.UserLanguage = userLang
 	if req.Config.Stack != nil {
-		fmt.Printf("📦 [API] Stack recebida: %s (%s) com %d libs\n", req.Config.Stack.Name, req.Config.Stack.ID, len(req.Config.Stack.Libraries))
+		logger.Info("📦 [API] Stack recebida", "name", req.Config.Stack.Name, "id", req.Config.Stack.ID, "libsCount", len(req.Config.Stack.Libraries))
 	} else {
-		fmt.Printf("⚠️ [API] Stack não recebida no payload!\n")
+		logger.Warn("⚠️ [API] Stack não recebida no payload")
 	}
 
 	core := orchestrator.NewOrchestrator(req.Path, h.Plugins, h.Engine)
@@ -1024,6 +1068,38 @@ func (h *APIHandler) SaveProjectSpec(w http.ResponseWriter, r *http.Request) {
 		projectName = filepath.Base(req.Path)
 	}
 	h.Engine.AddProject(projectName, req.Path)
+
+	// Salva no Banco de Dados Governance (SQLite)
+	stackName := ""
+	if req.Config.Stack != nil {
+		stackName = req.Config.Stack.Name
+	}
+	
+	governance.InitDB(req.Path) // Garante que o banco está aberto
+	err = governance.SaveProject(governance.DBProject{
+		Path:                      req.Path,
+		Name:                      projectName,
+		Stack:                     stackName,
+		Language:                  req.Config.Language,
+		Architecture:              req.Config.Architecture,
+		Domain:                    req.Config.Domain,
+		FunctionalRequirements:    req.Config.FunctionalRequirements,
+		NonFunctionalRequirements: req.Config.NonFunctionalRequirements,
+		DataStrategy:              req.Config.DataStrategy,
+		StateManagement:           req.Config.StateManagement,
+		ApiContract:               req.Config.ApiContract,
+		Customization:             req.Config.Customization,
+		Instructions:              req.Config.Instructions,
+		UserLanguage:              req.Config.UserLanguage,
+	})
+	if err != nil {
+		logger.Error("⚠️ Erro ao salvar especificação no banco", err)
+	}
+
+	// Sincroniza o Roadmap também se ele vier no payload
+	if req.Roadmap != nil {
+		governance.SyncDBToJSON(req.Path)
+	}
 
 	w.WriteHeader(http.StatusOK)
 	w.Write([]byte("Documentação .spec-wizard/ atualizada com sucesso!"))
@@ -1142,7 +1218,7 @@ func (h *APIHandler) GenerateRoadmapFromCode(w http.ResponseWriter, r *http.Requ
 	core := orchestrator.NewOrchestrator(req.Path, h.Plugins, h.Engine)
 	roadmap, err := core.UpdateRoadmapFromCode(req.Config)
 	if err != nil {
-		fmt.Printf("❌ [API] Erro ao gerar roadmap: %v\n", err)
+		logger.Error("❌ [API] Erro ao gerar roadmap", err)
 		sendJSONError(w, "Falha ao gerar roadmap via código: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -1387,6 +1463,23 @@ func (h *APIHandler) CheckTaskTests(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Busca o status atual da tarefa para não sobrescrever com vazio
+	currentStatus := "in_progress"
+	if roadmap, ok := state.Roadmap.(orchestrator.ProjectRoadmap); ok {
+		for _, s := range roadmap.Sprints {
+			if s.ID == req.SprintID {
+				for _, t := range s.Tasks {
+					if t.ID == req.TaskID {
+						if t.Status != "" {
+							currentStatus = t.Status
+						}
+						break
+					}
+				}
+			}
+		}
+	}
+
 	// 1. Rodar Sensor de Validação
 	expert, _ := registry.FindExpertByLanguage(state.Language, h.Plugins)
 	sensor := orchestrator.NewSensorManager(absPath, state.Language, expert)
@@ -1425,11 +1518,19 @@ func (h *APIHandler) CheckTaskTests(w http.ResponseWriter, r *http.Request) {
 		testStatus = "success"
 	}
 
-	err = core.UpdateTaskProgress(req.SprintID, req.TaskID, "", report, testStatus, auditCriteria, auditFiles, auditTests)
+	// Atualiza o progresso da tarefa com o status correto para evitar reset indesejado
+	err = core.UpdateTaskProgress(req.SprintID, req.TaskID, currentStatus, report, testStatus, auditCriteria, auditFiles, auditTests)
 	if err != nil {
-		logger.Error("❌ [CheckTaskTests] Falha ao persistir status", err)
+		logger.Error("❌ [CheckTaskTests] Falha ao persistir status no JSON", err)
 		sendJSONError(w, "Falha ao persistir status: "+err.Error(), http.StatusInternalServerError)
 		return
+	}
+
+	// Sincroniza com o SQLite para Governança
+	if err := governance.InitDB(absPath); err == nil {
+		// Sincroniza o Banco de Dados SQLite
+		governance.InitDB(absPath)
+		logger.Info("🏛 [CheckTaskTests] Governança sincronizada com sucesso")
 	}
 
 	w.Header().Set("Content-Type", "application/json")

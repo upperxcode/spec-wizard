@@ -1,0 +1,58 @@
+# Catálogo de Arquiteturas por Linguagem/Contexto
+# Usado pelo comando `wz architectures` para apresentar opções ao usuário
+# Adicione entradas novas conforme novos experts forem criados
+
+architectures:
+  - id: "clean"
+    name: "Clean Architecture"
+    description: "Separation into layers (domain, use cases, adapters, infrastructure). Independent of frameworks, DBs and UI."
+    best_for: ["go", "flutter", "kotlin", "java", "python"]
+    aliases: ["clean arch", "uncle bob"]
+
+  - id: "hexagonal"
+    name: "Hexagonal Architecture (Ports & Adapters)"
+    description: "Core domain isolated by ports (interfaces) and adapters (implementations). Easy to swap external dependencies."
+    best_for: ["go", "java", "kotlin", "python"]
+    aliases: ["ports and adapters", "hexagonal"]
+
+  - id: "mvc"
+    name: "MVC (Model-View-Controller)"
+    description: "Classic separation of data (Model), presentation (View) and logic (Controller). Simple and well-known."
+    best_for: ["go", "python", "javascript", "php", "ruby"]
+    aliases: ["model view controller"]
+
+  - id: "layered"
+    name: "Layered Architecture (N-Tier)"
+    description: "Traditional layers: Presentation → Business Logic → Data Access. Simple to understand and implement."
+    best_for: ["go", "java", "python", "javascript"]
+    aliases: ["n-tier", "3-tier", "layered"]
+
+  - id: "microservices"
+    name: "Microservices"
+    description: "System decomposed into small independent services communicating via APIs. High scalability, higher operational complexity."
+    best_for: ["go", "java", "python", "javascript"]
+    aliases: ["micro services", "distributed"]
+
+  - id: "event-driven"
+    name: "Event-Driven Architecture"
+    description: "Components communicate through events (queues, pub/sub). Decoupled and highly scalable."
+    best_for: ["go", "java", "python", "javascript"]
+    aliases: ["event sourcing", "pub sub", "cqrs"]
+
+  - id: "modular-monolith"
+    name: "Modular Monolith"
+    description: "Single deployable unit but organized into well-defined internal modules. Best of both worlds for most projects."
+    best_for: ["go", "java", "python", "javascript", "flutter"]
+    aliases: ["modular", "monolith"]
+
+  - id: "bloc"
+    name: "BLoC (Business Logic Component)"
+    description: "Flutter-specific pattern: separates UI from business logic using streams and events."
+    best_for: ["flutter"]
+    aliases: ["business logic component", "flutter bloc"]
+
+  - id: "mvvm"
+    name: "MVVM (Model-View-ViewModel)"
+    description: "Separation with a ViewModel mediating between View and Model. Common in Flutter/mobile apps."
+    best_for: ["flutter", "kotlin", "swift", "javascript"]
+    aliases: ["model view viewmodel"]

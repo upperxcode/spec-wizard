@@ -28,9 +28,9 @@ type ExecutionContext struct {
 	ApiContracts       string        `json:"api_contracts"`
 	UserQuestion       string        `json:"user_question"`
 	KnowledgeBase      string        `json:"knowledge_base"`
-	ReferenceFiles     []string      `json:"reference_files"`
-	RelatedFiles       []string      `json:"related_files"`
-	TestFiles          []string      `json:"test_files"`
+	ReferenceFiles     interface{}   `json:"reference_files"`
+	RelatedFiles       interface{}   `json:"related_files"`
+	TestFiles          interface{}   `json:"test_files"`
 	Libraries          []LibraryInfo `json:"libraries"`
 	TestLogs           string        `json:"test_logs"`
 	TestFailPrompt     string        `json:"test_fail_prompt"`

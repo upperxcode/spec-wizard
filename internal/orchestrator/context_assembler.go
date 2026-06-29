@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"spec-wizard/internal/logger"
 	"spec-wizard/internal/registry"
+	"spec-wizard/internal/governance"
 	"strings"
 )
 
@@ -21,6 +22,8 @@ type TaskContext struct {
 	KnowledgeContent   string            `json:"knowledge_content,omitempty"`
 	Stack              *StackPlugin      `json:"stack,omitempty"`
 	PreviousContext    map[string]string `json:"previous_context,omitempty"` // Contexto de tarefas anteriores se necessário
+	ProjectID          int               `json:"project_id"`            // ID interno do projeto para governança
+	IsCodingTask       bool              `json:"is_coding_task"`            // Flag para injetar protocolo de governança
 }
 
 // ContextAssembler monta instruções ricas para a IA em uma janela limpa
@@ -43,31 +46,51 @@ func (ca *ContextAssembler) AssembleTaskContext(task Task, sprint Sprint, plugin
 	// 1. Carrega SPEC.md
 	spec, _ := ca.loadFile("SPEC.md")
 	if spec == "" {
-		spec = "[Nenhuma especificação técnica encontrada em .spec-wizard/SPEC.md]"
+		spec = "[No technical specification found in .spec-wizard/SPEC.md]"
 	}
+
 
 	// 2. Carrega Skills (Golden Rules)
 	skills, _ := ca.loadFile("skills.md")
 	if skills == "" {
-		skills = "[Nenhuma regra de ouro encontrada em .spec-wizard/skills.md]"
+		skills = "[No golden rules found in .spec-wizard/skills.md]"
 	}
+
 
 	// 3. Carrega PRD.md para contexto de negócio
 	prd, _ := ca.loadFile("PRD.md")
+
+	// 4. Busca ProjectID no Banco
+	pID, _ := governance.GetOrCreateProject(ca.ProjectPath)
 	if prd == "" {
-		prd = "[Nenhum requisito de negócio encontrado em .spec-wizard/PRD.md]"
+		prd = "[No business requirements found in .spec-wizard/PRD.md]"
 	}
+
 
 	// 4. Busca contexto relevante na Base de Conhecimento
 	km := NewKnowledgeManager(ca.ProjectPath)
 	knowledge := km.GetRelevantContext(task.Title, task.Description)
 
 	// 5. Carrega Spec específica da tarefa (se existir)
+	// Primeiro tenta arquivo (legado), depois banco de dados (novo padrão)
 	taskSpecFile := fmt.Sprintf("tasks/task-%s.md", task.ID)
 	taskSpec, _ := ca.loadFile(taskSpecFile)
 	if taskSpec == "" {
-		taskSpec = "[Nenhuma especificação personalizada encontrada para esta tarefa específica. Siga os padrões globais.]"
+		// Busca no banco de dados SQLite
+		db := governance.GetDB()
+		if db != nil {
+			var fullContext, techReqs string
+			err := db.QueryRow("SELECT full_context, technical_requirements FROM task_details WHERE task_id = ?", task.ID).Scan(&fullContext, &techReqs)
+			if err == nil {
+				taskSpec = fullContext + "\n\n### Requisitos Técnicos Adicionais\n" + techReqs
+			}
+		}
 	}
+
+	if taskSpec == "" {
+		taskSpec = "[No custom specification found for this specific task. Follow global patterns.]"
+	}
+
 
 	// 6. Carrega Stack Plugin (se houver)
 	stack, _ := LoadStackPlugin(filepath.Join(ca.WizardPath, "stack.json"))
@@ -83,6 +106,7 @@ func (ca *ContextAssembler) AssembleTaskContext(task Task, sprint Sprint, plugin
 		Skills:             skills,
 		KnowledgeContent:   knowledge,
 		Stack:              stack,
+		ProjectID:          pID,
 		PreviousContext: map[string]string{
 			"business_requirements": prd,
 		},
@@ -95,93 +119,129 @@ func (ca *ContextAssembler) AssembleTaskContext(task Task, sprint Sprint, plugin
 func (ca *ContextAssembler) BuildPromptForTask(taskCtx *TaskContext) string {
 	prompt := strings.Builder{}
 
-	prompt.WriteString("# 🎯 TAREFA DE DESENVOLVIMENTO - JANELA LIMPA\n\n")
+	prompt.WriteString("# 🎯 DEVELOPMENT TASK - CLEAN WINDOW\n\n")
 
-	// Sistema de Instruções
-	prompt.WriteString("## Sistema de Instruções\n")
-	prompt.WriteString("Você é um desenvolvedor sênior. Você deve completar esta tarefa seguindo RIGOROSAMENTE as regras ouro abaixo.\n")
-	prompt.WriteString("Responda com código pronto para produção, testado e documentado.\n\n")
+	// Instruction System
+	prompt.WriteString("## Instruction System\n")
+	prompt.WriteString("You are a senior developer. You must complete this task by STRICTLY following the golden rules below.\n")
+	prompt.WriteString("Provide production-ready, tested, and documented code.\n")
+	prompt.WriteString("**IMPORTANT**: Respond in the user's preferred language: pt-BR.\n\n")
 
-	// Regras de Ouro
-	prompt.WriteString("## 🔒 Golden Rules (Não Negocie)\n")
+	// Golden Rules
+	prompt.WriteString("## 🔒 Golden Rules (Do Not Negotiate)\n")
 	prompt.WriteString(taskCtx.Skills)
 	prompt.WriteString("\n\n")
 
-	// Contexto do Workspace (Árvore de Arquivos)
-	prompt.WriteString("## 📂 Estrutura Atual do Workspace\n")
+	// Workspace Context
+	prompt.WriteString("## 📂 Current Workspace Structure\n")
 	if tree := ca.generateSimpleTree(ca.ProjectPath, 3); tree != "" {
 		prompt.WriteString("```\n" + tree + "```\n\n")
 	}
 
-	// Especificação Técnica
-	prompt.WriteString("## 📐 Especificação Técnica do Projeto\n")
+	// Technical Specification
+	prompt.WriteString("## 📐 Project Technical Specification\n")
 	prompt.WriteString(taskCtx.Spec)
 	prompt.WriteString("\n\n")
 
-	// Especificação Específica da Tarefa
+	// Task Specific Specification
 	if taskCtx.TaskSpec != "" && !strings.Contains(taskCtx.TaskSpec, "Nenhuma especificação personalizada encontrada") {
-		prompt.WriteString("## 📋 Especificação Detalhada da Tarefa (Contrato de Implementação)\n")
-		prompt.WriteString("⚠️ **ESTA SEÇÃO TEM PRECEDÊNCIA SOBRE A SPEC GLOBAL PARA ESTA TAREFA** ⚠️\n")
+		prompt.WriteString("## 📋 Detailed Task Specification (Implementation Contract)\n")
+		prompt.WriteString("⚠️ **THIS SECTION HAS PRECEDENCE OVER THE GLOBAL SPEC FOR THIS TASK** ⚠️\n")
 		prompt.WriteString(taskCtx.TaskSpec)
 		prompt.WriteString("\n\n")
 	}
 
-	// Contexto de Negócio
-	prompt.WriteString("## 💼 Contexto de Negócio\n")
+	// Business Context
+	prompt.WriteString("## 💼 Business Context\n")
 	prompt.WriteString(taskCtx.PreviousContext["business_requirements"])
 	prompt.WriteString("\n\n")
 
-	// Base de Conhecimento (Se disponível)
+	// Knowledge Base
 	if taskCtx.KnowledgeContent != "" {
+		prompt.WriteString("## 🧠 Knowledge Base Context\n")
 		prompt.WriteString(taskCtx.KnowledgeContent)
 		prompt.WriteString("\n\n")
 	}
 
-	// DEPENDENCY MANIFEST (Opinionated Stack Builder)
+	// DEPENDENCY MANIFEST
 	if taskCtx.Stack != nil {
 		prompt.WriteString("## 📦 DEPENDENCY MANIFEST (Stack: " + taskCtx.Stack.Name + ")\n")
-		prompt.WriteString("Você DEVE utilizar as bibliotecas e frameworks abaixo para implementar esta tarefa.\n\n")
+		prompt.WriteString("You MUST use the libraries and frameworks below to implement this task.\n\n")
 
 		for _, lib := range taskCtx.Stack.Libraries {
 			mandatoryFlag := ""
 			if lib.Mandatory {
-				mandatoryFlag = " ⚠️ [ESTRITAMENTE OBRIGATÓRIO]"
+				mandatoryFlag = " ⚠️ [STRICTLY MANDATORY]"
 			}
 
-			prompt.WriteString(fmt.Sprintf("### Biblioteca: %s%s\n", lib.Name, mandatoryFlag))
-			prompt.WriteString(fmt.Sprintf("- **Categoria**: %s\n", lib.Category))
-			prompt.WriteString(fmt.Sprintf("- **Descrição**: %s\n", lib.Description))
-			prompt.WriteString(fmt.Sprintf("- **Comando de Instalação**: `%s`\n", lib.InstallCmd))
-			prompt.WriteString("- **Exemplo de Uso**:\n")
+			prompt.WriteString(fmt.Sprintf("### Library: %s%s\n", lib.Name, mandatoryFlag))
+			prompt.WriteString(fmt.Sprintf("- **Category**: %s\n", lib.Category))
+			prompt.WriteString(fmt.Sprintf("- **Description**: %s\n", lib.Description))
+			prompt.WriteString(fmt.Sprintf("- **Installation Command**: `%s`\n", lib.InstallCmd))
+			prompt.WriteString("- **Usage Example**:\n")
 			prompt.WriteString(fmt.Sprintf("```%s\n%s\n```\n\n", taskCtx.Stack.Language, lib.UsageExample))
 		}
 	}
 
-	// Tarefa Específica
-	prompt.WriteString("## 📋 Sua Tarefa Específica\n")
-	prompt.WriteString("### ID da Tarefa: " + taskCtx.TaskID + "\n")
-	prompt.WriteString("### Título: " + taskCtx.TaskTitle + "\n")
-	prompt.WriteString("### Descrição:\n" + taskCtx.TaskDescription + "\n\n")
+	// Specific Task
+	prompt.WriteString("## 📋 Your Specific Task\n")
+	prompt.WriteString("### Task ID: " + taskCtx.TaskID + "\n")
+	prompt.WriteString("### Title: " + taskCtx.TaskTitle + "\n")
+	prompt.WriteString("### Description:\n" + taskCtx.TaskDescription + "\n\n")
 
-	// Critérios de Aceitação
+	// Acceptance Criteria
 	if len(taskCtx.AcceptanceCriteria) > 0 {
-		prompt.WriteString("### ✅ Critérios de Aceitação (Obrigatórios):\n")
+		prompt.WriteString("### ✅ Acceptance Criteria (Mandatory):\n")
 		for i, criteria := range taskCtx.AcceptanceCriteria {
 			prompt.WriteString(fmt.Sprintf("%d. %s\n", i+1, criteria))
 		}
 		prompt.WriteString("\n")
 	}
 
-	// Instruções Finais
+	// Final Instructions
 	prompt.WriteString("---\n\n")
-	prompt.WriteString("## Entrega Esperada\n\n")
-	prompt.WriteString("Forneça:\n")
-	prompt.WriteString("1. **Código**: Implementação completa da tarefa\n")
-	prompt.WriteString("2. **Estrutura**: Nomes de arquivos e pastas onde o código deve ser salvo\n")
-	prompt.WriteString("3. **Testes**: Exemplos de teste unitário se aplicável\n")
-	prompt.WriteString("4. **Documentação**: Comentários no código explicando decisões críticas\n\n")
 
-	prompt.WriteString("Comece agora.\n")
+	// SE FOR UMA TAREFA DE CODIFICAÇÃO, INJETA O PROTOCOLO DE GOVERNANÇA AUTÔNOMA
+	if taskCtx.IsCodingTask {
+		prompt.WriteString("## 🛡️ AUTONOMOUS GOVERNANCE PROTOCOL (STRICT)\n")
+		prompt.WriteString("You are in AUTONOMOUS CODING MODE. You must execute the following protocol EXACTLY:\n\n")
+		
+		prompt.WriteString("### 1. Readiness Validation\n")
+		prompt.WriteString("- Analyze the 'Detailed Task Specification' provided above.\n")
+		prompt.WriteString("- If any technical detail is missing to implement a perfect solution, STOP and ask for clarification.\n\n")
+
+		prompt.WriteString("### 2. Incremental implementation & Database Logging\n")
+		prompt.WriteString(fmt.Sprintf("- **Project ID**: Use `%d` for all database operations.\n", taskCtx.ProjectID))
+		prompt.WriteString("- **For each Acceptance Criteria implemented**:\n")
+		prompt.WriteString("  - Use the tool `wz` with command `db_insert acceptance_criteria {\"project_id\": " + fmt.Sprint(taskCtx.ProjectID) + ", \"task_id\": \"" + strings.TrimPrefix(taskCtx.TaskID, "task-") + "\", \"status\": \"completed\", \"description\": \"Criteria description...\"}` to mark it as DONE immediately after coding.\n")
+		prompt.WriteString("- **For each file created/modified**:\n")
+		prompt.WriteString("  - Use the tool `wz` with command `db_insert files {\"project_id\": " + fmt.Sprint(taskCtx.ProjectID) + ", \"path\": \"path/to/file.go\"}` to register it.\n")
+		prompt.WriteString("  - Link it to the task: `db_insert task_files {\"project_id\": " + fmt.Sprint(taskCtx.ProjectID) + ", \"task_id\": \"" + strings.TrimPrefix(taskCtx.TaskID, "task-") + "\", \"file_id\": \"$FID\", \"file_type\": \"source|test\", \"action\": \"created\"}`.\n\n")
+
+		prompt.WriteString("### 3. Mandatory Testing Gate\n")
+		prompt.WriteString("- You MUST create at least one unit test for your implementation.\n")
+		prompt.WriteString("- Run the tests using the appropriate shell command (e.g., `go test ./...`).\n")
+		prompt.WriteString("- If tests FAIL, you must fix the code before proceeding.\n\n")
+
+		prompt.WriteString("### 4. Final Submission\n")
+		prompt.WriteString("- Only after all tests PASS and all files are registered in the database, call the audit endpoint: `/api/project/audit-task`.\n\n")
+		
+		prompt.WriteString("## Expected Delivery\n\n")
+		prompt.WriteString("Provide:\n")
+		prompt.WriteString("1. **Governance Execution**: Log of database inserts for criteria and files.\n")
+		prompt.WriteString("2. **Production Code**: High-quality implementation.\n")
+		prompt.WriteString("3. **Test Code**: Files verifying the implementation.\n")
+		prompt.WriteString("4. **Test Report**: Proof that tests passed.\n\n")
+	} else {
+		prompt.WriteString("## Expected Delivery\n\n")
+		prompt.WriteString("Provide:\n")
+		prompt.WriteString("1. **Code**: Complete implementation of the task\n")
+		prompt.WriteString("2. **Structure**: File names and paths where the code should be saved\n")
+		prompt.WriteString("3. **Tests**: Unit test examples if applicable\n")
+		prompt.WriteString("4. **Documentation**: Comments in the code explaining critical decisions\n\n")
+	}
+
+	prompt.WriteString("Start now. Respond in pt-BR.\n")
 
 	return prompt.String()
 }

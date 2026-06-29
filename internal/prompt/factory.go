@@ -22,15 +22,9 @@ func (f *PromptFactory) GenerateExecutionPrompt(ctx ExecutionContext) string {
 		stackRules = strings.Join(ctx.StackRules, "\n")
 	}
 
-	refFiles := ""
-	if len(ctx.RelatedFiles) > 0 {
-		refFiles = strings.Join(ctx.RelatedFiles, "\n")
-	}
+	refFiles := formatFiles(ctx.RelatedFiles)
 
-	testFilesStr := ""
-	if len(ctx.TestFiles) > 0 {
-		testFilesStr = strings.Join(ctx.TestFiles, "\n")
-	}
+	testFilesStr := formatFiles(ctx.TestFiles)
 
 	return fmt.Sprintf(ExecutionPromptTemplate,
 		ctx.Language,
@@ -81,10 +75,7 @@ func (f *PromptFactory) GenerateAcceptanceCriteriaAuditPrompt(ctx ExecutionConte
 		criteria += fmt.Sprintf("%d. %s\n", i+1, c)
 	}
 
-	testFilesStr := ""
-	if len(ctx.TestFiles) > 0 {
-		testFilesStr = strings.Join(ctx.TestFiles, "\n")
-	}
+	testFilesStr := formatFiles(ctx.TestFiles)
 
 	return fmt.Sprintf(AcceptanceCriteriaAuditPromptTemplate,
 		ctx.TaskTitle,
@@ -138,6 +129,16 @@ func (f *PromptFactory) CreateUpdateRoadmapPrompt(ctx RoadmapContext, fileTree, 
 	)
 }
 
+func (f *PromptFactory) CreateRoadmapAuditPrompt(ctx RoadmapContext, dossier string) string {
+	return fmt.Sprintf(RoadmapAuditPromptTemplate,
+		ctx.Language,
+		ctx.PRD,
+		ctx.Spec,
+		dossier,
+		ctx.UserLanguage,
+	)
+}
+
 func (f *PromptFactory) GenerateInterpretationPrompt(lang string, technicalFacts map[string]interface{}, userLang string) string {
 	inferred := technicalFacts["inferred_properties"]
 	tree := technicalFacts["file_tree"]
@@ -177,10 +178,11 @@ func (f *PromptFactory) GenerateTaskSpecBootstrap(ctx ExecutionContext) string {
 	}
 
 	return fmt.Sprintf(TaskSpecBootstrapTemplate,
+		ctx.UserLanguage,
 		ctx.ProjectName,
 		ctx.Architecture,
 		ctx.Language,
-		ctx.Summary, // Usando summary como excerpt do global spec
+		ctx.Summary,
 		ctx.SprintGoal,
 		ctx.TaskTitle,
 		ctx.TaskDescription,
@@ -188,4 +190,31 @@ func (f *PromptFactory) GenerateTaskSpecBootstrap(ctx ExecutionContext) string {
 		ctx.ProjectName, // Import Matrix module prefix
 		ctx.ProjectName, // Module name
 	)
+}
+func formatFiles(files interface{}) string {
+	if files == nil {
+		return ""
+	}
+
+	var result []string
+	switch v := files.(type) {
+	case []string:
+		result = v
+	case []interface{}:
+		for _, item := range v {
+			switch f := item.(type) {
+			case string:
+				result = append(result, f)
+			case map[string]interface{}:
+				if path, ok := f["path"].(string); ok {
+					result = append(result, path)
+				}
+			}
+		}
+	}
+
+	if len(result) == 0 {
+		return ""
+	}
+	return strings.Join(result, "\n")
 }

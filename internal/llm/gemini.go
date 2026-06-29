@@ -3,6 +3,8 @@ package llm
 import (
 	"context"
 	"fmt"
+	"spec-wizard/internal/logger"
+
 	"google.golang.org/genai"
 )
 
@@ -23,7 +25,7 @@ func (p *GeminiProvider) Name() string {
 }
 
 func (p *GeminiProvider) Chat(ctx context.Context, model string, messages []Message, tools []Tool) (*Response, error) {
-	fmt.Printf("📡 [Gemini SDK] Gerando conteúdo com modelo: %s\n", model)
+	logger.Info("📡 [Gemini SDK] Gerando conteúdo", "model", model)
 
 	client, err := genai.NewClient(ctx, &genai.ClientConfig{
 		APIKey:  p.APIKey,

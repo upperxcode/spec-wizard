@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"spec-wizard/internal/logger"
 )
 
 type OpenRouterProvider struct {
@@ -30,7 +31,7 @@ func (p *OpenRouterProvider) Name() string {
 }
 
 func (p *OpenRouterProvider) Chat(ctx context.Context, model string, messages []Message, tools []Tool) (*Response, error) {
-	fmt.Printf("📡 [OpenRouter] Enviando requisição para %s (Modelo: %s)\n", p.BaseURL, model)
+	logger.Info("📡 [OpenRouter] Enviando requisição", "url", p.BaseURL, "model", model)
 
 	payload := map[string]interface{}{
 		"model":    model,

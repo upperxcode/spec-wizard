@@ -95,7 +95,6 @@ type ProjectConfig struct {
 	RoadmapLastUpdated        string            `json:"roadmapLastUpdated,omitempty"`
 	Roadmap                   interface{}       `json:"roadmap,omitempty"`
 	SourceFolders             []string          `json:"sourceFolders,omitempty"`
-	LLM                       LLMConfig         `json:"llm,omitempty"`
 	UserLanguage              string            `json:"userLanguage,omitempty"`
 	KnowledgeBase             []KnowledgeSource `json:"knowledgeBase,omitempty"`
 	ExcludePatterns           []string          `json:"excludePatterns,omitempty"`
@@ -120,8 +119,8 @@ type Task struct {
 	Status             string                `json:"status"` // "pending", "in_progress", "completed", "failed"
 	TestLogs           string                `json:"test_logs,omitempty"`
 	TestStatus         string                `json:"test_status,omitempty"` // "success", "failure"
-	TestFiles          []string              `json:"test_files,omitempty"`
-	Files              []string              `json:"files,omitempty"`
+	TestFiles          interface{}           `json:"test_files,omitempty"`
+	Files              interface{}           `json:"files,omitempty"`
 }
 
 // UnmarshalJSON para Task para suportar migração de acceptance_criteria (string[] -> object[])

@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"spec-wizard/internal/llm"
+	"spec-wizard/internal/logger"
 	"spec-wizard/internal/registry"
 	"strings"
 )
@@ -53,7 +54,7 @@ func (fl *FeedbackLoop) ExecuteTaskWithFeedback(ctx context.Context, taskCtx *Ta
 	}
 
 	// 1. Primeira tentativa: gera o código
-	fmt.Printf("🚀 Tentativa %d: Executando tarefa %s\n", attempt.AttemptNumber, task.Title)
+	logger.Info("🚀 [TDD] Executando tarefa", "attempt", attempt.AttemptNumber, "title", task.Title)
 
 	prompt := fl.Assembler.BuildPromptForTask(taskCtx)
 	attempt.OriginalPrompt = prompt
@@ -71,7 +72,7 @@ func (fl *FeedbackLoop) ExecuteTaskWithFeedback(ctx context.Context, taskCtx *Ta
 	}
 
 	// 2. Valida o código gerado
-	fmt.Println("🔍 Validando código gerado...")
+	logger.Info("🔍 [TDD] Validando código gerado")
 	sensor := NewSensorManager(fl.ProjectPath, fl.Language, fl.Plugin)
 	if err := sensor.RunValidation(nil); err != nil {
 		return nil, fmt.Errorf("erro ao rodar sensores: %v", err)
@@ -83,15 +84,15 @@ func (fl *FeedbackLoop) ExecuteTaskWithFeedback(ctx context.Context, taskCtx *Ta
 	if !sensor.HasFailures() {
 		attempt.ValidationPassed = true
 		attempt.Diff = fl.captureDiff()
-		fmt.Println("✅ Código validado com sucesso na primeira tentativa!")
+		logger.Info("✅ [TDD] Código validado com sucesso", "attempt", attempt.AttemptNumber)
 		return attempt, nil
 	}
 
 	// 4. Se falhou, tenta corrigir automaticamente (até MaxAttempts)
-	fmt.Printf("⚠️  Validação falhou. Iniciando loop de auto-correção...\n")
+	logger.Warn("⚠️  [TDD] Validação falhou. Iniciando auto-correção")
 
 	for attempt.AttemptNumber = 2; attempt.AttemptNumber <= fl.MaxAttempts; attempt.AttemptNumber++ {
-		fmt.Printf("\n🔄 Tentativa %d de %d: Corrigindo erros\n", attempt.AttemptNumber, fl.MaxAttempts)
+		logger.Info("🔄 [TDD] Tentativa de correção", "attempt", attempt.AttemptNumber, "max", fl.MaxAttempts)
 
 		// Monta o prompt de correção com os erros dos sensores
 		correctionPrompt := fl.buildCorrectionPrompt(taskCtx, attempt)
@@ -111,10 +112,10 @@ func (fl *FeedbackLoop) ExecuteTaskWithFeedback(ctx context.Context, taskCtx *Ta
 		}
 
 		// Valida novamente
-		fmt.Println("🔍 Revalidando código corrigido...")
+		logger.Info("🔍 [TDD] Revalidando código corrigido", "attempt", attempt.AttemptNumber)
 		sensor := NewSensorManager(fl.ProjectPath, fl.Language, fl.Plugin)
 		if err := sensor.RunValidation(nil); err != nil {
-			fmt.Printf("❌ Sensores falharam na tentativa %d\n", attempt.AttemptNumber)
+			logger.Error("❌ [TDD] Sensores falharam", err, "attempt", attempt.AttemptNumber)
 			continue
 		}
 
@@ -123,15 +124,15 @@ func (fl *FeedbackLoop) ExecuteTaskWithFeedback(ctx context.Context, taskCtx *Ta
 		if !sensor.HasFailures() {
 			attempt.ValidationPassed = true
 			attempt.Diff = fl.captureDiff()
-			fmt.Printf("✅ Código corrigido e validado na tentativa %d!\n", attempt.AttemptNumber)
+			logger.Info("✅ [TDD] Código validado", "attempt", attempt.AttemptNumber)
 			return attempt, nil
 		}
 
-		fmt.Printf("❌ Validação falhou na tentativa %d. Gerando nova correção...\n", attempt.AttemptNumber)
+		logger.Warn("❌ [TDD] Validação falhou. Gerando nova correção", "attempt", attempt.AttemptNumber)
 	}
 
 	// 5. Se chegou aqui, esgotou as tentativas
-	fmt.Printf("❌ Falha crítica: Não foi possível corrigir o código após %d tentativas.\n", fl.MaxAttempts)
+	logger.Error("❌ [TDD] Falha crítica: Limite de tentativas excedido", fmt.Errorf("código não passou na validação após %d tentativas", fl.MaxAttempts))
 	return attempt, fmt.Errorf("código não passou na validação após %d tentativas", fl.MaxAttempts)
 }
 
@@ -286,7 +287,7 @@ func (fl *FeedbackLoop) applyAIChanges(aiResponse string) error {
 					if err := os.WriteFile(fullPath, []byte(currentCode.String()), 0644); err != nil {
 						return err
 					}
-					fmt.Printf("💾 Arquivo salvo: %s\n", currentFile)
+					logger.Info("💾 [TDD] Arquivo salvo", "path", currentFile)
 					currentFile = "" // Reset para o próximo bloco
 				}
 			}

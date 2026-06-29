@@ -2606,7 +2606,7 @@ function App() {
                                                           {task.files.map((file, idx) => (
                                                             <div key={idx} className="flex items-center gap-1.5 px-2 py-1 bg-indigo-50 text-indigo-700 rounded-lg text-[10px] font-mono border border-indigo-100">
                                                               <File size={10} />
-                                                              {file.split('/').pop()}
+                                                              {(typeof file === 'string' ? file : file?.path || "").split('/').pop()}
                                                             </div>
                                                           ))}
                                                         </div>
@@ -2620,7 +2620,7 @@ function App() {
                                                           {task.test_files.map((file, idx) => (
                                                             <div key={idx} className="flex items-center gap-1.5 px-2 py-1 bg-emerald-50 text-emerald-700 rounded-lg text-[10px] font-mono border border-emerald-100">
                                                               <FileCode size={10} />
-                                                              {file.split('/').pop()}
+                                                              {(typeof file === 'string' ? file : file?.path || "").split('/').pop()}
                                                             </div>
                                                           ))}
                                                         </div>
@@ -2875,7 +2875,7 @@ function App() {
                         {editedTaskData.files && editedTaskData.files.map((file, idx) => (
                           <div key={idx} className="flex gap-3">
                             <input 
-                              value={file}
+                              value={typeof file === 'string' ? file : file?.path || ''}
                               placeholder="ex: internal/application/user_service.go"
                               onChange={(e) => {
                                 const newFiles = [...editedTaskData.files];
@@ -2908,7 +2908,7 @@ function App() {
                         {editedTaskData.test_files && editedTaskData.test_files.map((file, idx) => (
                           <div key={idx} className="flex gap-3">
                             <input 
-                              value={file}
+                              value={typeof file === 'string' ? file : file?.path || ''}
                               placeholder="ex: internal/application/user_service_test.go"
                               onChange={(e) => {
                                 const newFiles = [...editedTaskData.test_files];
@@ -3192,7 +3192,7 @@ function App() {
               </div>
               <div className="flex-1 overflow-auto p-0 bg-slate-900 font-mono text-xs">
                 <div className="min-w-full inline-block">
-                  {viewingDiff.diff.split('\n').map((line, i) => {
+                  {(viewingDiff?.diff || "").split('\n').map((line, i) => {
                     let bgColor = 'transparent';
                     let textColor = 'text-slate-400';
                     if (line.startsWith('+')) {
@@ -3601,7 +3601,7 @@ function App() {
               </div>
               <div className="flex-1 overflow-auto bg-slate-50 p-6 custom-scrollbar">
                 <div className="bg-[#1e293b] rounded-2xl p-6 font-mono text-sm leading-relaxed text-indigo-100 border border-slate-800 shadow-inner">
-                  {promptContent.split('\n').map((line, i) => (
+                  {(promptContent || "").split('\n').map((line, i) => (
                     <div key={i} className="min-h-[1.5rem]">
                       <span className="select-none mr-4 opacity-30 inline-block w-8 text-right">{i + 1}</span>
                       {line}

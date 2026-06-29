@@ -10,6 +10,7 @@ import (
 	"spec-wizard/config"
 	"spec-wizard/internal/adapters"
 	pathConfig "spec-wizard/internal/config"
+	"spec-wizard/internal/governance"
 	"spec-wizard/internal/logger"
 	"spec-wizard/internal/orchestrator"
 	"spec-wizard/internal/patterns"
@@ -30,23 +31,22 @@ func main() {
 
 	// 1. Inicializa Logs Estruturados
 	logFileName := "server.log"
-	customLogPath := ""
-	for i, arg := range os.Args {
+	for _, arg := range os.Args {
 		if arg == "--tui" {
 			logFileName = "tui.log"
 		}
-		if arg == "--log" && i+1 < len(os.Args) {
-			customLogPath = os.Args[i+1]
-		}
 	}
 
-	logFile := filepath.Join(paths.ResourcesDir, "logs", logFileName)
-	if customLogPath != "" {
-		logFile = customLogPath
-	}
+	// 🧙‍♂️ Centralização de Logs Globais
+	logDir := paths.LogDir
+	os.MkdirAll(logDir, 0755)
+	logFile := filepath.Join(logDir, logFileName)
 
+	// Força o modo analítico para o log ser legível
+	os.Setenv("LOG_ANALITIC", "true")
 	logger.Init(logFile)
-	logger.Info("🧙‍♂️ Sistema Iniciado", "mode", logFile)
+	cwd, _ := os.Getwd()
+	logger.Info("🧙‍♂️ Sistema Iniciado", "log", logFile, "cwd", cwd)
 
 	globalConfigPath := paths.ResolveConfig("config.json")
 	systemExpertsPath := paths.ResolveResource("experts.yaml")
@@ -59,11 +59,11 @@ func main() {
 	// Tenta carregar do diretório de recursos (instalado) e de um possível arquivo de override
 	plugins, err := registry.LoadExperts(systemExpertsPath, userExpertsPath, "config/experts.yaml")
 	if err != nil {
-		fmt.Printf("⚠️ Erro ao carregar experts: %v\n", err)
+		logger.Error("⚠️ Erro ao carregar experts", err)
 	}
 
 	themesDir := filepath.Join(paths.ResourcesDir, "themes")
-	fmt.Printf("📂 Usando configuração global: %s\n", globalConfigPath)
+	logger.Info("📂 Usando configuração global", "path", globalConfigPath)
 	engine, err := config.NewEngine(globalConfigPath, themesDir)
 	if err != nil {
 		logger.Error("❌ Falha ao carregar configuração global", err)
@@ -73,11 +73,11 @@ func main() {
 	// Exibe um resumo da configuração ativa para transparência
 	active := engine.GetConfig().Active
 	if active.Provider != "" {
-		fmt.Printf("🤖 LLM Ativo: %s (%s)\n", active.Provider, active.Model)
+		logger.Info("🤖 LLM Ativo", "provider", active.Provider, "model", active.Model)
 		// Busca detalhes do provedor
 		for _, p := range engine.GetConfig().Providers {
 			if p.Name == active.Provider {
-				fmt.Printf("🔗 API URL:   %s\n", p.APIURL)
+				logger.Info("🔗 API URL", "url", p.APIURL)
 				keyStatus := "✅ Configurada"
 				if p.APIKey == "" {
 					if os.Getenv(p.EnvAPIKey) != "" {
@@ -86,7 +86,7 @@ func main() {
 						keyStatus = fmt.Sprintf("❌ Faltando (Esperado ENV: %s)", p.EnvAPIKey)
 					}
 				}
-				fmt.Printf("🔑 Auth:      %s\n", keyStatus)
+				logger.Info("🔑 Auth", "status", keyStatus)
 				break
 			}
 		}
@@ -123,11 +123,11 @@ func main() {
 
 	// 1.8. Execução de Comandos Especiais
 	if killServer {
-		fmt.Printf("🛑 [Kill] Tentando encerrar processos na porta %s...\n", port)
+		logger.Info("🛑 [Kill] Tentando encerrar processos", "port", port)
 		if err := killProcessOnPort(port); err != nil {
-			fmt.Printf("⚠️  Aviso: %v\n", err)
+			logger.Warn("⚠️  Aviso no encerramento", "error", err)
 		} else {
-			fmt.Printf("✅ [Kill] Porta %s liberada!\n", port)
+			logger.Info("✅ [Kill] Porta liberada", "port", port)
 		}
 		os.Exit(0)
 	}
@@ -159,8 +159,14 @@ func main() {
 		engine.SetActiveProject(absPath)
 	}
 
+	// 1.10. Inicialização Proativa do Banco de Dados e Governança
+	logger.Info("🚀 [Governance] Inicializando banco de dados", "project", projectPath)
+	if err := governance.InitDB(projectPath); err != nil {
+		logger.Error("⚠️ Falha ao inicializar governança", err)
+	}
+
 	if useTUI {
-		fmt.Println("🚀 Iniciando TUI...")
+		logger.Info("🚀 Iniciando Interface de Governança (TUI)", "project", projectPath)
 
 		// Setup Orchestrator for anchoring
 		core := orchestrator.NewOrchestrator(projectPath, plugins, engine)
@@ -228,7 +234,7 @@ func main() {
 		}
 
 		if err := tui.Start(projectName, core, formatter); err != nil {
-			fmt.Printf("❌ Erro na TUI: %v\n", err)
+			logger.Error("❌ Erro na TUI", err)
 			os.Exit(1)
 		}
 		os.Exit(0)
@@ -239,6 +245,7 @@ func main() {
 	http.HandleFunc("/api/languages", handler.GetLanguages)
 	http.HandleFunc("/api/patterns/", handler.GetPatterns)
 	http.HandleFunc("/api/initialize", handler.InitializeProject)
+	http.HandleFunc("/api/roadmap", handler.GenerateRoadmap)
 	http.HandleFunc("/api/llm/status", handler.CheckLLMStatus)
 	http.HandleFunc("/api/plugins/status", handler.GetPluginsStatus)
 	http.HandleFunc("/api/llm/config", handler.GetLLMConfig)
@@ -318,7 +325,7 @@ func main() {
 	// 3. Servidor de Arquivos Estáticos para a UI (SPA)
 	uiDir := paths.UIDir
 	if _, err := os.Stat(uiDir); err == nil {
-		fmt.Printf("🌐 GUI Web disponível em: http://localhost:%s\n", port)
+		logger.Info("🌐 GUI Web disponível", "url", "http://localhost:"+port)
 		fs := http.FileServer(http.Dir(uiDir))
 		http.Handle("/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			// Se não for API e o arquivo não existir fisicamente, serve o index.html (padrão SPA)
@@ -332,10 +339,11 @@ func main() {
 			fs.ServeHTTP(w, r)
 		}))
 	} else {
-		fmt.Printf("⚠️  Aviso: Interface Web não instalada em %s. Use scripts/run ui para desenvolvimento.\n", uiDir)
+		logger.Warn("⚠️  Aviso: Interface Web não instalada", "path", uiDir)
 	}
 
-	fmt.Printf("🧙‍♂️ Spec Wizard API ativa em http://localhost:%s\n", port)
+	logger.Info("🧙‍♂️ Spec Wizard API ativa", "url", "http://localhost:"+port)
+	
 
 	// 3. Início do servidor com CORS simples
 	corsHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -356,7 +364,7 @@ func main() {
 	signal.Notify(stop, os.Interrupt, syscall.SIGTERM)
 	go func() {
 		<-stop
-		fmt.Println("\n🛑 [Main] Encerrando sistema e liberando recursos...")
+		logger.Info("🛑 [Main] Encerrando sistema e liberando recursos")
 		registry.GlobalManager.StopCurrent()
 		os.Exit(0)
 	}()
@@ -371,7 +379,7 @@ func main() {
 
 	serverErr := http.ListenAndServe(":"+port, corsHandler)
 	if serverErr != nil {
-		fmt.Printf("❌ Falha ao iniciar o servidor na porta %s: %v\n", port, serverErr)
+		logger.Error("❌ Falha ao iniciar o servidor", serverErr, "port", port)
 	}
 }
 
@@ -389,6 +397,7 @@ func killProcessOnPort(port string) error {
 	}
 
 	// 2. Se for o Spec Wizard, mata usando lsof (Linux/macOS)
-	cmd := exec.Command("sh", "-c", fmt.Sprintf("lsof -ti:%s | xargs kill -9", port))
+	// Filtramos por LISTEN para não matar o navegador conectado
+	cmd := exec.Command("sh", "-c", fmt.Sprintf("lsof -t -sTCP:LISTEN -i:%s | xargs kill", port))
 	return cmd.Run()
 }

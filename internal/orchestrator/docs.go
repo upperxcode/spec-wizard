@@ -336,7 +336,7 @@ func (o *Orchestrator) BootstrapTaskSpec(config ProjectConfig, sprintID, taskID 
 		}
 	}()
 
-	logger.Info("🏗️  [BootstrapTaskSpec] Iniciando geração de SPEC para tarefa", "taskID", taskID, "sprintID", sprintID)
+	logger.Info("🏗️  [BootstrapTaskSpec] Iniciando geração de SPEC para tarefa", "taskID", taskID, "sprintID", sprintID, "userLang", config.UserLanguage)
 
 	// 1. Tenta carregar o roadmap (sprints.json ou memória)
 	var roadmap ProjectRoadmap
@@ -396,6 +396,7 @@ func (o *Orchestrator) BootstrapTaskSpec(config ProjectConfig, sprintID, taskID 
 		TaskTitle:          targetTask.Title,
 		TaskDescription:    targetTask.Description,
 		AcceptanceCriteria: targetTask.GetCriteriaStrings(),
+		UserLanguage:       config.UserLanguage,
 	})
 
 	// LOG DO PROMPT (Resumo para o log não ficar gigante)
@@ -411,7 +412,7 @@ func (o *Orchestrator) BootstrapTaskSpec(config ProjectConfig, sprintID, taskID 
 		return "", fmt.Errorf("falha ao obter cliente LLM: %v", err)
 	}
 
-	logger.Info("⏳ [BootstrapTaskSpec] Aguardando resposta da IA (LM Studio/OpenAI)...")
+	logger.Info("⏳ [BootstrapTaskSpec] Aguardando resposta da IA...")
 	startTime := time.Now()
 	rawResponse, err := llmClient.Ask(bootstrapPrompt)
 	duration := time.Since(startTime)
@@ -422,6 +423,23 @@ func (o *Orchestrator) BootstrapTaskSpec(config ProjectConfig, sprintID, taskID 
 	}
 
 	logger.Info("✅ [BootstrapTaskSpec] IA respondeu com sucesso", "duration", duration.String(), "chars", len(rawResponse))
+
+	// 6. Validação de Segurança (Anti-Alucinação de Conclusão)
+	forbiddenPatterns := []string{
+		"concluída com sucesso",
+		"successfully completed",
+		"summary of changes",
+		"resumo da implementação",
+		"acceptance criteria met",
+	}
+
+	lowerResp := strings.ToLower(rawResponse)
+	for _, pattern := range forbiddenPatterns {
+		if strings.Contains(lowerResp, pattern) {
+			logger.Warn("🚨 [BootstrapTaskSpec] Alucinação detectada! IA tentou concluir a tarefa precocemente.", "pattern", pattern)
+			return "", fmt.Errorf("IA gerou um relatório de conclusão em vez de uma especificação técnica. Por favor, tente rodar o 'refine' novamente.")
+		}
+	}
 
 	// 5. Salva a spec gerada
 	tasksDir := filepath.Join(o.ProjectPath, ".spec-wizard", "tasks")

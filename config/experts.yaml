@@ -1,10 +1,15 @@
 experts:
   - id: "flutter-expert"
+    name: "Flutter Expert"
+    description: "Specialist in Flutter/Dart applications (mobile, web, desktop). Use for projects with pubspec.yaml."
     language: "flutter"
     start_command: "cd plugins/flutter-expert && ./expert"
     triggers:
       - "pubspec.yaml"
+
   - id: "go-expert"
+    name: "Go Expert"
+    description: "Specialist in Go applications (APIs, CLIs, microservices). Use for projects with go.mod."
     language: "go"
     start_command: "cd plugins/go-expert && ./expert"
     triggers:
@@ -12,12 +17,18 @@ experts:
     test_config:
       command: "go test ./..."
       fail_prompt: "Os testes de Go falharam. Analise a saída do erro abaixo e os arquivos envolvidos para identificar a causa raiz. Foque em erros de sintaxe, tipos ou falhas de asserção lógica."
+
   - id: "crush"
+    name: "Crush (Agnostic)"
+    description: "Language-agnostic expert powered by a local script. Suitable for any project type."
     language: "agnostic"
     start_command: "python3 scripts/crush_expert.py"
     triggers:
       - ".crush"
+
   - id: "gemini"
+    name: "Gemini (Agnostic)"
+    description: "Language-agnostic expert powered by Google Gemini. Suitable for any project type."
     language: "agnostic"
     start_command: "python3 scripts/gemini_expert.py"
     triggers:

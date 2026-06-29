@@ -51,7 +51,7 @@ func NewGoclawProvider(name, baseURL, apiKey, defaultModel string, sequential bo
 			providers.WithAnthropicModel(defaultModel),
 			providers.WithAnthropicName(nameLower),
 		)
-	case "openai", "lmstudio", "deepseek":
+	case "openai", "lmstudio", "deepseek", "gemini":
 		p = providers.NewOpenAIProvider(nameLower, apiKey, baseURL, defaultModel)
 	case "openrouter":
 		op := providers.NewOpenAIProvider(nameLower, apiKey, baseURL, defaultModel)

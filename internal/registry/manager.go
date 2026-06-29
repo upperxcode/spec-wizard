@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"spec-wizard/internal/logger"
 	"sync"
 	"syscall"
 	"time"
@@ -68,7 +69,7 @@ func (m *PluginManager) EnsureExpertRunning(plugin *ExpertPlugin) error {
 
 	// 3. Configura o endpoint dinamicamente
 	plugin.Endpoint = fmt.Sprintf("http://localhost:%d", port)
-	fmt.Printf("🚀 [Lifecycle] Alocando Expert %s na porta %d...\n", plugin.ID, port)
+	logger.Info("🚀 [Lifecycle] Alocando Expert", "id", plugin.ID, "port", port)
 
 	// 4. Inicia o processo
 	startCmd := fmt.Sprintf("%s %d", plugin.StartCommand, port)
@@ -99,18 +100,19 @@ func (m *PluginManager) EnsureExpertRunning(plugin *ExpertPlugin) error {
 	}
 
 	// 5. Aguarda saúde
-	maxRetries := 20
-	fmt.Printf("⏳ [Lifecycle] Aguardando expert %s subir em %s...\n", plugin.ID, plugin.Endpoint)
-	for i := 0; i < maxRetries; i++ {
-		if m.isHealthy(plugin.ID, plugin.Endpoint) {
-			fmt.Printf("✅ [Lifecycle] Expert %s ONLINE em %s\n", plugin.ID, plugin.Endpoint)
+	logger.Info("⏳ [Lifecycle] Aguardando expert subir", "id", plugin.ID, "endpoint", plugin.Endpoint)
+	for i := 0; i < 30; i++ {
+		resp, err := http.Get(plugin.Endpoint + "/health")
+		if err == nil && resp.StatusCode == http.StatusOK {
+			logger.Info("✅ [Lifecycle] Expert ONLINE", "id", plugin.ID, "endpoint", plugin.Endpoint)
+			resp.Body.Close()
 			return nil
 		}
 		time.Sleep(1 * time.Second)
 	}
 
 	m.stopExpertLocked(plugin.ID)
-	return fmt.Errorf("timeout: expert %s não respondeu ao health check em %s após %d tentativas", plugin.ID, plugin.Endpoint, maxRetries)
+	return fmt.Errorf("timeout: expert %s não respondeu ao health check em %s após 30 tentativas", plugin.ID, plugin.Endpoint)
 }
 
 // StopExpert encerra um expert específico
@@ -123,7 +125,8 @@ func (m *PluginManager) StopExpert(id string) {
 func (m *PluginManager) stopExpertLocked(id string) {
 	if running, ok := m.Running[id]; ok {
 		if running.Cmd != nil && running.Cmd.Process != nil {
-			fmt.Printf("🛑 [Lifecycle] Encerrando Expert: %s (PID: %d)\n", id, running.Cmd.Process.Pid)
+			logger.Info("🛑 [Lifecycle] Encerrando Expert", "id", id, "pid", running.Cmd.Process.Pid)
+			running.Cmd.Process.Signal(os.Interrupt)
 			pgid, err := syscall.Getpgid(running.Cmd.Process.Pid)
 			if err == nil {
 				syscall.Kill(-pgid, syscall.SIGKILL)

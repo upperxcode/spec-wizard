@@ -12,50 +12,24 @@ import (
 	"spec-wizard/internal/registry"
 )
 
-// GetLLMClient cria um cliente configurado baseado no estado do projeto ou nas configurações globais
+// GetLLMClient cria um cliente configurado baseado exclusivamente nas configurações globais
 func (o *Orchestrator) GetLLMClient(config ProjectConfig) (*llm.LLMClient, error) {
-	providerName := config.LLM.Provider
-	baseURL := config.LLM.BaseURL
-	apiKey := config.LLM.APIKey
-	envKey := config.LLM.EnvAPIKey
-	model := config.LLM.Model
-
-	fmt.Printf("🔍 [Orchestrator] Resolvendo cliente LLM (Proj: %s, Model: %s)\n", providerName, model)
-
-	// Fallback para Engine se não houver config completa no projeto
-	if (providerName == "" || apiKey == "") && o.Engine != nil {
-		fmt.Println("ℹ️ [Orchestrator] Configuração do projeto incompleta, buscando na Engine Global...")
-		p, m, err := o.Engine.GetActiveModel()
-		if err == nil {
-			if providerName == "" {
-				providerName = p.Name
-			}
-			if baseURL == "" {
-				baseURL = p.APIURL
-			}
-			if apiKey == "" {
-				apiKey = p.APIKey
-			}
-			envKey = p.EnvAPIKey
-			if model == "" {
-				model = m.Name
-			}
-			config.LLM.Sequential = p.Sequential
-			config.LLM.UseCLI = p.UseCLI
-		}
+	if o.Engine == nil {
+		return nil, fmt.Errorf("engine global não inicializada")
 	}
 
-	if providerName == "" {
-		return nil, fmt.Errorf("nenhum provedor de IA configurado (global ou no projeto)")
+	p, m, err := o.Engine.GetActiveModel()
+	if err != nil {
+		return nil, fmt.Errorf("falha ao obter modelo ativo global: %v", err)
 	}
 
-	fmt.Printf("✅ [Orchestrator] Cliente resolvido: %s (%s, UseCLI: %v)\n", providerName, model, config.LLM.UseCLI)
+	fmt.Printf("✅ [Orchestrator] Usando configuração Global: %s (%s, UseCLI: %v)\n", p.Name, m.Name, p.UseCLI)
 
-	provider, err := llm.NewProvider(providerName, baseURL, apiKey, envKey, config.LLM.Sequential, config.LLM.UseCLI, o.Plugins)
+	provider, err := llm.NewProvider(p.Name, p.APIURL, p.APIKey, p.EnvAPIKey, p.Sequential, p.UseCLI, o.Plugins)
 	if err != nil {
 		return nil, err
 	}
-	return llm.NewLLMClient(provider, model, o.Tools), nil
+	return llm.NewLLMClient(provider, m.Name, o.Tools), nil
 }
 
 // RequestAnchorFiles solicita ao Expert a geração dos documentos iniciais

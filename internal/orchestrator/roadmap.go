@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"spec-wizard/internal/governance"
 	"spec-wizard/internal/llm"
 	"spec-wizard/internal/logger"
 	"spec-wizard/internal/prompt"
@@ -33,7 +34,7 @@ func CleanJSONResponse(input string) string {
 
 // GenerateInitialRoadmap coordena a criação do plano de ação via IA
 func (o *Orchestrator) GenerateInitialRoadmap(config ProjectConfig) (*ProjectRoadmap, error) {
-	fmt.Printf("🧠 Gerando Roadmap estratégico para %s (%v)...\n", config.Language, config.Patterns)
+	logger.Info("🧠 [Governance] Gerando Roadmap estratégico", "language", config.Language, "patterns", config.Patterns)
 
 	factory := prompt.NewPromptFactory()
 	roadmapPrompt := factory.CreateRoadmapPrompt(prompt.RoadmapContext{
@@ -76,7 +77,7 @@ func (o *Orchestrator) GenerateInitialRoadmap(config ProjectConfig) (*ProjectRoa
 				return nil, fmt.Errorf("erro ao processar JSON da IA após %d tentativas: %v | Raw: %s", maxRetries, err, cleanedJSON)
 			}
 			currentTry++
-			fmt.Printf("⚠️ JSON malformado (tentativa %d/%d). Solicitando correção à IA... Erro: %v\n", currentTry, maxRetries, err)
+			logger.Warn("⚠️  [Roadmap] JSON malformado", "try", currentTry, "max", maxRetries, "error", err)
 
 			correctionPrompt := fmt.Sprintf("O seu JSON anterior resultou em um erro de parse: %v. Por favor, corrija o JSON e retorne APENAS o objeto JSON puro, sem markdown ou explicações.", err)
 			rawResponse, err = llmClient.Ask(correctionPrompt)
@@ -110,7 +111,12 @@ func (o *Orchestrator) saveRoadmapToFile(roadmap ProjectRoadmap) error {
 		return err
 	}
 
-	return os.WriteFile(filepath.Join(wizardDir, "sprints.json"), data, 0644)
+	if err := os.WriteFile(filepath.Join(wizardDir, "sprints.json"), data, 0644); err != nil {
+		return err
+	}
+
+	// Sincroniza o Banco de Dados SQLite com o conteúdo atualizado do JSON
+	return governance.UpdateFromRoadmapJSON(o.ProjectPath, data)
 }
 
 // SaveRoadmap exporta o estado do roadmap para JSON e MD
@@ -152,13 +158,22 @@ func (o *Orchestrator) UpdateTaskProgress(sprintID, taskID FlexibleID, status, l
 						roadmap.Sprints[i].Tasks[j].TestStatus = testStatus
 					}
 					if criteria != nil {
-						roadmap.Sprints[i].Tasks[j].AcceptanceCriteria = criteria
+						// Deduplicação por descrição
+						seen := make(map[string]bool)
+						var uniqueCriteria []AcceptanceCriterion
+						for _, c := range criteria {
+							if !seen[c.Description] {
+								uniqueCriteria = append(uniqueCriteria, c)
+								seen[c.Description] = true
+							}
+						}
+						roadmap.Sprints[i].Tasks[j].AcceptanceCriteria = uniqueCriteria
 					}
 					if len(files) > 0 {
-						roadmap.Sprints[i].Tasks[j].Files = uniqueStrings(append(roadmap.Sprints[i].Tasks[j].Files, files...))
+						roadmap.Sprints[i].Tasks[j].Files = mergeFiles(roadmap.Sprints[i].Tasks[j].Files, files)
 					}
 					if len(testFiles) > 0 {
-						roadmap.Sprints[i].Tasks[j].TestFiles = uniqueStrings(append(roadmap.Sprints[i].Tasks[j].TestFiles, testFiles...))
+						roadmap.Sprints[i].Tasks[j].TestFiles = mergeFiles(roadmap.Sprints[i].Tasks[j].TestFiles, testFiles)
 					}
 					found = true
 					break
@@ -176,15 +191,15 @@ func (o *Orchestrator) UpdateTaskProgress(sprintID, taskID FlexibleID, status, l
 
 // UpdateRoadmapFromCode gera ou atualiza o roadmap baseando-se no estado atual do código (Processo em 2 Fases)
 func (o *Orchestrator) UpdateRoadmapFromCode(config ProjectConfig) (*ProjectRoadmap, error) {
-	fmt.Printf("🧠 Iniciando Auditoria Técnica em 2 Fases para %s...\n", config.Language)
+	logger.Info("🧠 [Audit] Iniciando Auditoria Técnica", "language", config.Language)
 
 	fileTree := o.generateFileTree(config.ExcludePatterns)
 	criticalContext := o.getCriticalContext()
 
 	prd, _ := o.readProjectDoc(o.ProjectPath, "PRD.md")
 	spec, _ := o.readProjectDoc(o.ProjectPath, "SPEC.md")
-	skills, _ := o.readProjectDoc(o.ProjectPath, "skills.md")
-	roadmapMD, _ := o.readProjectDoc(o.ProjectPath, "roadmap.md")
+	// skills, _ := o.readProjectDoc(o.ProjectPath, "skills.md")
+	// roadmapMD, _ := o.readProjectDoc(o.ProjectPath, "roadmap.md")
 
 	factory := prompt.NewPromptFactory()
 	llmClient, err := o.GetLLMClient(config)
@@ -193,7 +208,6 @@ func (o *Orchestrator) UpdateRoadmapFromCode(config ProjectConfig) (*ProjectRoad
 	}
 
 	// --- FASE 1: MAPEAMENTO DE MÓDULOS ---
-	// Injetamos o criticalContext junto com a fileTree para dar "visão" à IA
 	mappingPrompt := factory.CreateModuleMappingPrompt(prompt.RoadmapContext{
 		Language:     config.Language,
 		PRD:          prd,
@@ -208,27 +222,17 @@ func (o *Orchestrator) UpdateRoadmapFromCode(config ProjectConfig) (*ProjectRoad
 	if mappingResponse == "" {
 		return nil, fmt.Errorf("a IA retornou uma resposta vazia")
 	}
-	if err != nil {
-		return nil, fmt.Errorf("erro na Fase 1 (Mapeamento): %v", err)
-	}
+
 	moduleMapping := CleanJSONResponse(mappingResponse)
 	os.WriteFile(filepath.Join(o.ProjectPath, ".spec-wizard", "project_mapping.json"), []byte(moduleMapping), 0644)
 
-	// --- FASE 2: GERAÇÃO DO ROADMAP ---
-	roadmapPrompt := factory.CreateUpdateRoadmapPrompt(prompt.RoadmapContext{
-		Language:               config.Language,
-		Patterns:               config.Patterns,
-		Architecture:           config.Architecture,
-		DataStrategy:           config.DataStrategy,
-		StateManagement:        config.StateManagement,
-		Customization:          config.Customization,
-		AdditionalInstructions: config.Instructions,
-		PRD:                    prd,
-		Spec:                   spec,
-		Skills:                 skills,
-		ExistingRoadmap:        roadmapMD,
-		UserLanguage:           config.UserLanguage,
-	}, fileTree, moduleMapping)
+	// --- FASE 2: GERAÇÃO DO ROADMAP (SPRINTS) ---
+	roadmapPrompt := factory.CreateRoadmapAuditPrompt(prompt.RoadmapContext{
+		Language:     config.Language,
+		PRD:          prd,
+		Spec:         spec,
+		UserLanguage: config.UserLanguage,
+	}, moduleMapping)
 
 	roadmapResponse, err := llmClient.Ask(roadmapPrompt)
 	if err != nil {
@@ -237,12 +241,8 @@ func (o *Orchestrator) UpdateRoadmapFromCode(config ProjectConfig) (*ProjectRoad
 	if roadmapResponse == "" {
 		return nil, fmt.Errorf("a IA retornou uma resposta vazia")
 	}
-	if err != nil {
-		return nil, fmt.Errorf("erro na Fase 2 (Roadmap): %v", err)
-	}
 
 	cleanedJSON := CleanJSONResponse(roadmapResponse)
-
 	var roadmap ProjectRoadmap
 	maxRetries := 2
 	currentTry := 0
@@ -255,7 +255,7 @@ func (o *Orchestrator) UpdateRoadmapFromCode(config ProjectConfig) (*ProjectRoad
 				return nil, fmt.Errorf("erro ao processar JSON da IA na Fase 2 após %d tentativas: %v | Raw: %s", maxRetries, err, cleanedJSON)
 			}
 			currentTry++
-			fmt.Printf("⚠️ JSON de Roadmap malformado (Fase 2, tentativa %d/%d). Solicitando correção... Erro: %v\n", currentTry, maxRetries, err)
+			logger.Warn("⚠️  JSON de Roadmap malformado (Fase 2)", "try", currentTry, "max", maxRetries, "error", err)
 
 			correctionPrompt := fmt.Sprintf("O seu JSON de Roadmap anterior resultou em um erro: %v. Por favor, corrija o JSON e retorne APENAS o objeto JSON puro, sem markdown ou explicações.", err)
 			roadmapResponse, err = llmClient.Ask(correctionPrompt)
@@ -340,7 +340,7 @@ type AuditResult struct {
 
 // AuditTask verifica se uma tarefa específica já foi implementada no código
 func (o *Orchestrator) AuditTask(ctx context.Context, sprintID, taskID FlexibleID, config ProjectConfig) (*AuditResult, error) {
-	fmt.Printf("🔍 Auditando tarefa %s da Sprint %s...\n", taskID, sprintID)
+	logger.Info("🔍 [Audit] Validando tarefa", "taskID", taskID, "sprintID", sprintID)
 
 	var roadmap ProjectRoadmap
 
@@ -366,12 +366,12 @@ func (o *Orchestrator) AuditTask(ctx context.Context, sprintID, taskID FlexibleI
 
 	var targetTask *Task
 	var targetSprint *Sprint
-	for i := range roadmap.Sprints {
-		if roadmap.Sprints[i].ID == sprintID {
-			targetSprint = &roadmap.Sprints[i]
-			for j := range roadmap.Sprints[i].Tasks {
-				if roadmap.Sprints[i].Tasks[j].ID == taskID {
-					targetTask = &roadmap.Sprints[i].Tasks[j]
+	for _, sprint := range roadmap.Sprints {
+		if sprint.ID == sprintID {
+			targetSprint = &sprint
+			for _, task := range sprint.Tasks {
+				if task.ID == taskID {
+					targetTask = &task
 					break
 				}
 			}
@@ -574,16 +574,9 @@ type aiAuditResponse struct {
 
 // AuditTaskProgress realiza uma auditoria profunda usando a IA para validar critérios de aceite baseada em logs de execução/sensores
 func (o *Orchestrator) AuditTaskProgress(ctx context.Context, config ProjectConfig, sprintID, taskID FlexibleID, report string) ([]AcceptanceCriterion, []string, []string, string, error) {
-	fmt.Printf("🤖 [AuditTaskProgress] Chamada recebida para Tarefa: %s, Sprint: %s\n", taskID, sprintID)
-	if report != "" {
-		fmt.Printf("📝 [AuditTaskProgress] Logs de falha detectados (%d bytes). Iniciando análise de reparo...\n", len(report))
-	} else {
-		fmt.Printf("✅ [AuditTaskProgress] Nenhum log de falha recebido. Validando critérios de sucesso.\n")
-	}
-
+	sprintsPath := filepath.Join(o.ProjectPath, ".spec-wizard", "sprints.json")
 	var roadmap ProjectRoadmap
-	path := filepath.Join(o.ProjectPath, ".spec-wizard", "sprints.json")
-	data, err := os.ReadFile(path)
+	data, err := os.ReadFile(sprintsPath)
 	if err != nil {
 		// Se não encontrar o arquivo, tenta pegar da config
 		if config.Roadmap != nil {
@@ -644,7 +637,7 @@ func (o *Orchestrator) AuditTaskProgress(ctx context.Context, config ProjectConf
 			FileTree:           o.generateFileTree(config.ExcludePatterns),
 			TestLogs:           currentReport,
 		}
-		
+
 		var auditPrompt string
 		if testsPassing {
 			auditPrompt = fmt.Sprintf(`✅ SUCCESS! All tests passed and the project compiles.
@@ -678,20 +671,20 @@ Verify if all acceptance criteria were met and generate the final JSON response.
 
 		// 1. Captura arquivos alterados pelas ferramentas do GoClaw
 		touchedFiles := o.Tools.GetTouchedFiles()
-		
+
 		// 2. SEMPRE roda o sensor do PLUGIN para validar a realidade atual
 		success, newReport, sensorErr := o.RunSensor(config.Language, touchedFiles)
 		if sensorErr != nil {
 			logger.Warn("⚠️ [AuditLoop] Erro técnico no sensor", "error", sensorErr)
 		}
-		
+
 		currentReport = newReport
 		testsPassing = success
 
 		// Se os testes passaram e a IA enviou o JSON de auditoria, encerramos!
 		hasJson := strings.Contains(finalResponse, "{")
 		isAudit := strings.Contains(finalResponse, "criteria") || strings.Contains(finalResponse, "status") || strings.Contains(finalResponse, "completed")
-		
+
 		if testsPassing && hasJson && isAudit {
 			logger.Info("🎯 [AuditLoop] Auditoria finalizada com sucesso!")
 			break
@@ -713,4 +706,53 @@ Verify if all acceptance criteria were met and generate the final JSON response.
 	}
 
 	return result.Criteria, result.ImplementationFiles, result.TestFiles, result.Summary, nil
+}
+
+// mergeFiles combina arquivos existentes (interface{}) com novos caminhos ([]string)
+// preservando o formato de objeto se presente e evitando duplicatas.
+func mergeFiles(existing interface{}, newFiles []string) interface{} {
+	if existing == nil {
+		return newFiles
+	}
+
+	// Mapa para controle de duplicatas pelo path
+	seen := make(map[string]bool)
+	var result []interface{}
+
+	// 1. Processa existentes
+	switch v := existing.(type) {
+	case []string:
+		for _, f := range v {
+			if !seen[f] {
+				result = append(result, f)
+				seen[f] = true
+			}
+		}
+	case []interface{}:
+		for _, item := range v {
+			path := ""
+			switch f := item.(type) {
+			case string:
+				path = f
+			case map[string]interface{}:
+				if p, ok := f["path"].(string); ok {
+					path = p
+				}
+			}
+			if path != "" && !seen[path] {
+				result = append(result, item)
+				seen[path] = true
+			}
+		}
+	}
+
+	// 2. Adiciona novos se não vistos
+	for _, nf := range newFiles {
+		if !seen[nf] {
+			result = append(result, nf)
+			seen[nf] = true
+		}
+	}
+
+	return result
 }
