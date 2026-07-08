@@ -1,6 +1,6 @@
 📂 Usando configuração global: /home/john/.config/spec-wizard/config.json
 🤖 LLM Ativo: Crush CLI (crush)
-🔗 API URL:   
+🔗 API URL:
 🔑 Auth:      ❌ Faltando (Esperado ENV: )
 🌐 GUI Web disponível em: http://localhost:10810
 🧙‍♂️ Spec Wizard API ativa em http://localhost:10810

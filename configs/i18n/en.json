@@ -53,5 +53,12 @@
   "hint_prepare": "Task is ready but not prepared. Use 'wz prepare %s' to load the context.",
   "hint_code": "Task files have not been detected yet. Use 'wz code %s' to start implementation.",
   "hint_audit": "Tests or acceptance criteria failed. Use 'wz audit %s' to validate the implementation.",
-  "hint_inconsistency": "Synchronize the project with 'wz sync' to correct discrepancies between roadmap and tasks."
+  "hint_inconsistency": "Synchronize the project with 'wz sync' to correct discrepancies between roadmap and tasks.",
+  "help_sync_task": "- sync-task <id> [--status <s>] [--bugs <b>] [--notes <n>]: Manually sync task state (internal/IA use).",
+  "help_configure_mcp": "- configure-mcp: Configures the MCP server in the project config file.",
+  "help_clear_omniroute_cache": "- clear-omniroute-cache: Clears the OmniRoute cache (ghost records).",
+  "help_feed_sliding_window": "- feed-sliding-window <prompt> <response>: Feeds the sliding window with recent interactions.",
+  "help_update_macro_resume": "- update-macro-resume <last-action>: Updates the macro task summary.",
+  "help_assemble_slim_prompt": "- assemble-slim-prompt <user-prompt> <target-file>: Assembles a slim prompt for the AI.",
+  "help_slim_prompt": "- slim-prompt <user-prompt> <target-file>: Executes all commands to assemble a slim prompt."
 }

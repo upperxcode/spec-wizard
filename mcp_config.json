@@ -1,0 +1,5 @@
+{
+  "omniroute_db_path": "/home/john/.omniroute/storage.sqlite",
+  "clear_cache_on_execution": true,
+  "max_sliding_window_prompts": 3
+}

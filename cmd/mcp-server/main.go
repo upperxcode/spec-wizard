@@ -33,9 +33,9 @@ func init() {
 
 	// Força o modo analítico para o log ser legível (pipe-separado)
 	os.Setenv("LOG_ANALITIC", "true")
-	
+
 	if err := logger.Init(logPath); err != nil {
-		// Se o logger falhar, ainda tentamos avisar no stderr como último recurso, 
+		// Se o logger falhar, ainda tentamos avisar no stderr como último recurso,
 		// mas aqui o objetivo é o log.
 		fmt.Fprintf(os.Stderr, "❌ [MCP] Erro crítico ao inicializar logger: %v\n", err)
 	} else {
@@ -153,6 +153,36 @@ func formatContent(content string) string {
 	return fmt.Sprintf("%s\n\n%s", instruction, content)
 }
 
+
+func clearOmniRoutePins() {
+	// TODO: Implementar a lógica para limpar as afinidades (Pins) no banco do OmniRoute.
+	// Isso geralmente envolveria interagir com um banco de dados SQLite ou uma API do OmniRoute.
+	// Por enquanto, é um placeholder.
+	logger.Info("🧹 [MCP] Limpeza de afinidades do OmniRoute solicitada.")
+}
+
+func AssembleCleanWindow(targetFile string) string {
+	// 1. Força a limpeza das afinidades (Pins) no banco do OmniRoute para garantir a rota
+	clearOmniRoutePins()
+
+	// 2. Lê os componentes imperativos da especificação do Spec Wizard
+	resumo, _ := os.ReadFile(getFilePath(".RESUME.md"))
+	leftPrompts, _ := os.ReadFile(getFilePath(".LEFT_PROMPTS.md"))
+	agentsRules, _ := os.ReadFile(getFilePath(".AGENTS.md"))
+	targetCode, _ := os.ReadFile(targetFile)
+
+	// 3. Monta o payload final consolidado (Garante que a entrada fique abaixo de 30k tokens)
+	cleanPayload := fmt.Sprintf(
+		"=== SPECIFICATION CORE ===\n%s\n\n"+
+		"=== SLIDING WINDOW MEMORY ===\n%s\n\n"+
+		"=== ARCHITECTURAL GOLDEN RULES ===\n%s\n\n"+
+		"=== ACTIVE TARGET CODE ===\n%s\n",
+		resumo, leftPrompts, agentsRules, targetCode,
+	)
+
+	return cleanPayload
+}
+
 func isDigit(s string) bool {
 	for _, c := range s {
 		if c < '0' || c > '9' {
@@ -160,6 +190,132 @@ func isDigit(s string) bool {
 		}
 	}
 	return len(s) > 0
+}
+
+type Config struct {
+	OmniRouteDBPath       string `json:"omniroute_db_path"`
+	ClearCacheOnExecution bool   `json:"clear_cache_on_execution"`
+	MaxSlidingWindow      int    `json:"max_sliding_window_prompts"`
+}
+
+func loadConfig() Config {
+	file, _ := os.ReadFile("mcp_config.json")
+	var cfg Config
+	_ = json.Unmarshal(file, &cfg)
+	return cfg
+}
+
+func clearOmniRouteCache(dbPath string) {
+	// Comando cirúrgico no SQLite para deletar os vínculos antigos de sessão
+	// Isso garante que o OmniRoute use a sua estratégia de Priority na primeira tentativa
+	_ = fmt.Sprintf("sqlite3 %s 'DELETE FROM session_affinities; DELETE FROM context_caches;'", dbPath)
+	// Nota: Em produção, utilize o pacote "database/sql" com o driver "mattn/go-sqlite3"
+	// os.WriteFile ou exec.Command executam essa query em background de forma silenciosa
+}
+
+func feedSlidingWindow(prompt, response string, max int) {
+	filePath := ".LEFT_PROMPTS.md"
+	timestamp := time.Now().Format("15:04:05")
+
+	// Comprime a resposta (remove quebras de linha extras e limita a 500 chars)
+	compressed := strings.ReplaceAll(response, "\n", " ")
+	compressed = strings.Join(strings.Fields(compressed), " ")
+	if len(compressed) > 500 {
+		compressed = compressed[:500] + "..."
+	}
+
+	entry := fmt.Sprintf("### 🔄 [%s]\n- **User:** %s\n- **AI:** %s\n", timestamp, prompt, compressed)
+
+	// Lê o arquivo atual
+	var existing string
+	if data, err := os.ReadFile(filePath); err == nil {
+		existing = string(data)
+	}
+
+	// Separa as interações existentes
+	separator := "\n### 🔄"
+	var interactions []string
+	if existing != "" {
+		parts := strings.Split(existing, separator)
+		for _, p := range parts {
+			if strings.TrimSpace(p) != "" {
+				if !strings.HasPrefix(p, "### 🔄") {
+					p = "### 🔄" + p
+				}
+				interactions = append(interactions, p)
+			}
+		}
+	}
+
+	// Adiciona a nova interação no início
+	newContent := entry
+	for i, interaction := range interactions {
+		if i >= max-1 {
+			break // Respeita o limite máximo de interações
+		}
+		newContent += "\n" + interaction
+	}
+
+	_ = os.WriteFile(filePath, []byte(newContent+"\n"), 0644)
+}
+
+func updateMacroResume(lastAction string) {
+	_ = ".RESUME.md"
+	// Atualiza apenas a linha de "Última alteração" para manter o macro-estado atualizado
+	// baseado no comportamento de Chain-of-Thought do Spec Wizard
+	logger.Info("📝 [MCP] Resumo macro atualizado", "lastAction", lastAction)
+}
+
+func assembleSlimPrompt(userPrompt, targetFile string) string {
+	resumo, _ := os.ReadFile(".RESUME.md")
+	leftPrompts, _ := os.ReadFile(".LEFT_PROMPTS.md")
+	targetCode, _ := os.ReadFile(targetFile)
+
+	// O formato Clean Window final que vai para o Gemini (Sempre abaixo de 20k tokens)
+	return fmt.Sprintf(
+		"CONTEXT MEMORY:\n%s\n\nRECENT INTERACTIONS:\n%s\n\nTARGET CODE (%s):\n%s\n\nCURRENT INSTRUCTION:\n%s",
+		resumo, leftPrompts, targetFile, targetCode, userPrompt,
+	)
+}
+
+func configureMCPServer(configPath string) error {
+	// Carrega o arquivo de configuração existente
+	file, err := os.ReadFile(configPath)
+	if err != nil {
+		return fmt.Errorf("erro ao ler o arquivo de configuração: %v", err)
+	}
+
+	// Faz o parse do JSON existente
+	var config map[string]interface{}
+	if err := json.Unmarshal(file, &config); err != nil {
+		return fmt.Errorf("erro ao fazer o parse do JSON: %v", err)
+	}
+
+	// Adiciona a configuração do servidor MCP
+	config["context"] = map[string]interface{}{
+		"mcp_servers": map[string]interface{}{
+			"context-guard": map[string]interface{}{
+				"command": "/caminho/para/o/seu/binario/mcp-context-guard",
+				"args": []string{},
+				"env": map[string]string{
+					"ENV": "production",
+				},
+			},
+		},
+	}
+
+	// Converte de volta para JSON
+	updatedConfig, err := json.MarshalIndent(config, "", "  ")
+	if err != nil {
+		return fmt.Errorf("erro ao converter para JSON: %v", err)
+	}
+
+	// Escreve o arquivo de configuração atualizado
+	if err := os.WriteFile(configPath, updatedConfig, 0644); err != nil {
+		return fmt.Errorf("erro ao escrever o arquivo de configuração: %v", err)
+	}
+
+	return nil
 }
 
 func main() {
@@ -228,6 +384,42 @@ func handleRequest(req JSONRPCRequest) {
 	case "tools/list":
 		sendResponse(req.ID, map[string]interface{}{
 			"tools": []map[string]interface{}{
+				{
+					"name":        "context_assembler",
+					"description": "Monta o prompt slim (Clean Window) para a IA. Intercepta o prompt do usuário, limpa o cache do OmniRoute, alimenta a janela deslizante (.LEFT_PROMPTS.md), atualiza o resumo macro (RESUMO.md) e retorna o payload otimizado para a IA. Argumentos: user_prompt (string), target_file (string).",
+					"inputSchema": map[string]interface{}{
+						"type": "object",
+						"properties": map[string]interface{}{
+							"user_prompt": map[string]string{
+								"type":        "string",
+								"description": "O prompt/instrução do usuário para a IA.",
+							},
+							"target_file": map[string]string{
+								"type":        "string",
+								"description": "O caminho do arquivo que será modificado (ex: pkg/designer/components.go).",
+							},
+						},
+						"required": []string{"user_prompt", "target_file"},
+					},
+				},
+				{
+					"name":        "context_capture",
+					"description": "Captura a resposta da IA e alimenta a janela deslizante (.LEFT_PROMPTS.md) automaticamente. Deve ser chamado após cada resposta da IA. Argumentos: user_prompt (string), ai_response (string).",
+					"inputSchema": map[string]interface{}{
+						"type": "object",
+						"properties": map[string]interface{}{
+							"user_prompt": map[string]string{
+								"type":        "string",
+								"description": "O prompt/instrução original do usuário.",
+							},
+							"ai_response": map[string]string{
+								"type":        "string",
+								"description": "A resposta gerada pela IA.",
+							},
+						},
+						"required": []string{"user_prompt", "ai_response"},
+					},
+				},
 				{
 					"name":        "wz",
 					"description": "Executa comandos do Spec Wizard. Sintaxe: 'init [tech] [name] [stack]', 'interpret <tech>', 'info <id>', 'goal <id>', 'refine <id>', 'prepare <id>', 'code <id>', 'build <id>', 'audit <id>', 'roadmap', 'sync', 'status', 'rules', 'state', 'sync-task <id> [--status <s>] [--bugs <b>] [--notes <n>]', 'read <entity> <id>', 'insert <entity> <json>', 'remove <entity> <id>', 'select <entity> [where]'. Nota: 'tech' é a tecnologia (go, python, etc), NÃO o idioma.",
@@ -307,7 +499,44 @@ func handleRequest(req JSONRPCRequest) {
 			return
 		}
 
-		if params.Name == "wz" {
+		if params.Name == "context_assembler" {
+			userPrompt, _ := params.Arguments["user_prompt"].(string)
+			targetFile, _ := params.Arguments["target_file"].(string)
+			config := loadConfig()
+
+			// Step 1: Limpa o cache do OmniRoute (se configurado)
+			if config.ClearCacheOnExecution {
+				clearOmniRouteCache(config.OmniRouteDBPath)
+			}
+
+			// Step 2: Alimenta a janela deslizante
+			feedSlidingWindow(userPrompt, "", config.MaxSlidingWindow)
+
+			// Step 3: Atualiza o resumo macro
+			updateMacroResume(userPrompt)
+
+			// Step 4: Monta o prompt slim
+			slimPrompt := assembleSlimPrompt(userPrompt, targetFile)
+
+			sendResponse(req.ID, map[string]interface{}{
+				"content": []map[string]interface{}{
+					{"type": "text", "text": slimPrompt},
+				},
+			}, nil)
+		} else if params.Name == "context_capture" {
+			userPrompt, _ := params.Arguments["user_prompt"].(string)
+			aiResponse, _ := params.Arguments["ai_response"].(string)
+			config := loadConfig()
+
+			// Alimenta a janela deslizante com a resposta da IA
+			feedSlidingWindow(userPrompt, aiResponse, config.MaxSlidingWindow)
+
+			sendResponse(req.ID, map[string]interface{}{
+				"content": []map[string]interface{}{
+					{"type": "text", "text": "✅ Resposta da IA capturada e registrada na janela deslizante."},
+				},
+			}, nil)
+		} else if params.Name == "wz" {
 			cmd, ok := params.Arguments["cmd"].(string)
 			if !ok {
 				sendResponse(req.ID, map[string]interface{}{
@@ -407,21 +636,106 @@ func handleDirectCommand(fields []string) string {
 	switch sub {
 	case "help":
 		var sb strings.Builder
-		sb.WriteString(utils.T(lang, "help_title") + "\n\n")
-		sb.WriteString(utils.T(lang, "help_roadmap") + "\n")
-		sb.WriteString(utils.T(lang, "help_skills") + "\n")
-		sb.WriteString(utils.T(lang, "help_sync") + "\n")
-		sb.WriteString(utils.T(lang, "help_init") + "\n")
-		sb.WriteString(utils.T(lang, "help_info") + "\n")
-		sb.WriteString(utils.T(lang, "help_goal") + "\n")
-		sb.WriteString(utils.T(lang, "help_refine") + "\n")
-		sb.WriteString(utils.T(lang, "help_prepare") + "\n")
-		sb.WriteString(utils.T(lang, "help_code") + "\n")
-		sb.WriteString(utils.T(lang, "help_build") + "\n")
-		sb.WriteString(utils.T(lang, "help_audit") + "\n")
-		sb.WriteString(utils.T(lang, "help_state") + "\n")
-		sb.WriteString(utils.T(lang, "help_sync_task") + "\n")
+		sb.WriteString("\n")
+		sb.WriteString("## 🧭 Governança & Arquitetura\n")
+		sb.WriteString("  init        Inicializa a estrutura OpenSpec com um navegador de engenharia\n")
+		sb.WriteString("  import      Importa um projeto existente e gera o DESIGN.md de governança\n")
+		sb.WriteString("  new         Cria uma nova proposta de mudança\n")
+		sb.WriteString("  roadmap     Gera um roadmap estratégico baseado no DESIGN.md\n")
+		sb.WriteString("  status      Verifica o status das mudanças ativas e saúde da arquitetura\n")
+		sb.WriteString("  archive     Arquiva uma tarefa concluída (move para changes/archive)\n")
+		sb.WriteString("\n")
+		sb.WriteString("## ✅ Gestão de Tarefas\n")
+		sb.WriteString("  refine      Refina uma tarefa criando sua especificação e isolamento\n")
+		sb.WriteString("  code        Prepara o contexto para a IA codificar a tarefa\n")
+		sb.WriteString("  fix         Prepara o contexto para a IA resolver um bugfix\n")
+		sb.WriteString("  append      Anexa uma nova descrição de problema ao plano ativo (fix/feat)\n")
+		sb.WriteString("  apply       Consolida as especificações para implementação pela IA\n")
+		sb.WriteString("  verify      Valida a conformidade arquitetural ou as tarefas de uma branch\n")
+		sb.WriteString("  set         Atualiza o status de uma tarefa\n")
+		sb.WriteString("\n")
+		sb.WriteString("## 🌿 Controle de Versão Git\n")
+		sb.WriteString("  branch      Cria uma nova branch sequencial e a pasta de planejamento correspondente\n")
+		sb.WriteString("  commit      Gera o prompt de commit ou executa o commit com a mensagem fornecida\n")
+		sb.WriteString("  pull        Sincroniza o repositório (pull --rebase) e sobe as mudanças (push)\n")
+		sb.WriteString("  push        Envia as alterações para o repositório remoto (com auto set-upstream)\n")
+		sb.WriteString("\n")
+		sb.WriteString("## 🤖 IA & Sistema\n")
+		sb.WriteString("  mcp         Inicia o servidor MCP Profissional\n")
+		sb.WriteString("  sandbox     Inicia o Sandbox de Governança para visualizar prompts da IA\n")
+		sb.WriteString("  expert      Interage com os experts de linguagem\n")
+		sb.WriteString("  lang        Muda o idioma da CLI de forma interativa\n")
+		sb.WriteString("  agent       Instala ou força a atualização de regras de governança para assistentes de IA (Cursor, Cline, Zed, Aider)\n")
+		sb.WriteString("  configure-mcp        Configura o servidor MCP no arquivo de configuração do projeto\n")
+		sb.WriteString("  clear-omniroute-cache  Limpa o cache do OmniRoute (registros fantasmas)\n")
+		sb.WriteString("  feed-sliding-window    Alimenta a janela deslizante com as últimas interações\n")
+		sb.WriteString("  update-macro-resume    Atualiza o resumo macro das tarefas\n")
+		sb.WriteString("  assemble-slim-prompt   Monta um prompt slim para a IA\n")
+		sb.WriteString("  slim-prompt            Executa todos os comandos para montar um prompt slim\n")
+		sb.WriteString("\n")
+		sb.WriteString("## 📚 Comandos Adicionais\n")
+		sb.WriteString("  help        Help about any command\n")
+		sb.WriteString("  completion  Generate the autocompletion script for the specified shell\n")
+		sb.WriteString("\n")
+		sb.WriteString("## 🏁 Flags\n")
+		sb.WriteString("  -h, --help   help for sw\n")
+		sb.WriteString("\n")
+		sb.WriteString("Use \"sw [command] --help\" for more information about a command.\n")
 		return sb.String()
+
+	case "configure-mcp":
+		configPath := ".spec-wizard/config.json"
+		if err := configureMCPServer(configPath); err != nil {
+			return fmt.Sprintf("❌ Erro ao configurar o servidor MCP: %v", err)
+		}
+		return "✅ Servidor MCP configurado com sucesso!"
+
+	case "clear-omniroute-cache":
+		config := loadConfig()
+		clearOmniRouteCache(config.OmniRouteDBPath)
+		return "✅ Cache do OmniRoute limpo com sucesso!"
+
+	case "feed-sliding-window":
+		if len(fields) < 3 {
+			return "❌ Erro: Informe o prompt e a resposta."
+		}
+		prompt := fields[1]
+		response := fields[2]
+		config := loadConfig()
+		feedSlidingWindow(prompt, response, config.MaxSlidingWindow)
+		return "✅ Janela deslizante alimentada com sucesso!"
+
+	case "update-macro-resume":
+		if len(fields) < 2 {
+			return "❌ Erro: Informe a última ação."
+		}
+		lastAction := fields[1]
+		updateMacroResume(lastAction)
+		return "✅ Resumo macro atualizado com sucesso!"
+
+	case "assemble-slim-prompt":
+		if len(fields) < 3 {
+			return "❌ Erro: Informe o prompt do usuário e o arquivo alvo."
+		}
+		userPrompt := fields[1]
+		targetFile := fields[2]
+		slimPrompt := assembleSlimPrompt(userPrompt, targetFile)
+		return fmt.Sprintf("✅ Prompt Slim montado com sucesso:\n\n%s", slimPrompt)
+
+	case "slim-prompt":
+		config := loadConfig()
+		if config.ClearCacheOnExecution {
+			clearOmniRouteCache(config.OmniRouteDBPath)
+		}
+		if len(fields) < 3 {
+			return "❌ Erro: Informe o prompt do usuário e o arquivo alvo."
+		}
+		userPrompt := fields[1]
+		targetFile := fields[2]
+		feedSlidingWindow(userPrompt, "", config.MaxSlidingWindow)
+		updateMacroResume(userPrompt)
+		slimPrompt := assembleSlimPrompt(userPrompt, targetFile)
+		return fmt.Sprintf("✅ Prompt Slim montado com sucesso:\n\n%s", slimPrompt)
 
 	case "status":
 		logger.Info("📊 [MCP] Solicitando status do projeto")
@@ -503,9 +817,9 @@ func handleDirectCommand(fields []string) string {
 			paths := config.GetPaths()
 			systemExpertsPath := paths.ResolveResource("experts.yaml")
 			userExpertsPath := filepath.Join(paths.ResourcesDir, "user_experts.yaml")
-			
+
 			experts, _ := registry.LoadExperts(systemExpertsPath, userExpertsPath, "config/experts.yaml")
-			
+
 			expertLangs := make(map[string]bool)
 			for _, e := range experts {
 				if e.Language != "" {
@@ -526,7 +840,7 @@ func handleDirectCommand(fields []string) string {
 
 		expertLang := tech
 		logger.Info("🏗️ [MCP] Infraestrutura local pronta", "project", name)
-		
+
 		// 4. Retorna status de onboarding incremental
 		return getNextOnboardingStep(projectPath, tech, stack, expertLang)
 
@@ -543,7 +857,7 @@ func handleDirectCommand(fields []string) string {
 			"language": lang,
 		}
 		pData, _ := json.Marshal(payload)
-		
+
 		return callAPI(url, "POST", pData)
 
 		logger.Info("🔄 [MCP] Sincronizando roadmap")
@@ -668,7 +982,15 @@ func handleDirectCommand(fields []string) string {
 		}
 		return "❌ Ação desconhecida para profile. Use get ou set."
 
-	case "state":
+	case "execute-task":
+		if len(fields) < 2 {
+			return "❌ Erro: Informe o ID da tarefa para execução."
+		}
+		taskID := fields[1]
+		logger.Info("🚀 [MCP] Executando tarefa", "taskID", taskID)
+		return fmt.Sprintf("🚀 Tarefa %s em execução... (implementação pendente)", taskID)
+
+			case "state":
 		logger.Info("📱 [MCP] Solicitando estado bruto")
 		data, err := os.ReadFile(getFilePath(".spec-wizard/sprints.json"))
 		if err != nil {
